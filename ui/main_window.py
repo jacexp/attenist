@@ -1,9 +1,7 @@
 import logging
 import os
 import time
-import threading
-import pyttsx3
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,7 +25,6 @@ from workbook.indexes.date import DateIndexer
 
 from services.search_service import SearchService
 from services.attendance_service import AttendanceService
-from services.speech_service import SpeechService
 
 # Configure Audit Logging
 logging.basicConfig(
@@ -85,8 +82,6 @@ class MainWindow(QWidget):
             self.employees,
             self.dates,
         )
-
-        self.speech_service = SpeechService()
 
         self.selected_employee = None
 
@@ -164,17 +159,9 @@ class MainWindow(QWidget):
         self.results_list.itemSelectionChanged.connect(self.on_selection_changed)
         self.mark_button.clicked.connect(self.mark_attendance)
         self.manual_save_button.clicked.connect(self.perform_save)
-        self.search_box.returnPressed.connect(self.shift_combo.setFocus)
         
-        # Feature 1: Enter Key Attendance Marking
-        self.shift_combo.installEventFilter(self)
-
-    def eventFilter(self, watched, event):
-        if watched == self.shift_combo and event.type() == QEvent.Type.KeyPress:
-            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                self.mark_attendance()
-                return True
-        return super().eventFilter(watched, event)
+        # Single-Enter Workflow: Mark from search box
+        self.search_box.returnPressed.connect(self.mark_attendance)
 
     def setup_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.perform_save)
@@ -253,9 +240,6 @@ class MainWindow(QWidget):
         self.search_box.clear()
         self.search_box.setFocus()
 
-        # Feature 2: Voice Confirmation (Queued, Non-blocking)
-        self.speech_service.speak(emp_name)
-
     def set_ui_enabled(self, enabled: bool):
         self.day_combo.setEnabled(enabled)
         self.search_box.setEnabled(enabled)
@@ -320,13 +304,10 @@ class MainWindow(QWidget):
 
             if reply == QMessageBox.Save:
                 self.perform_save()
-                self.speech_service.stop()
                 event.accept()
             elif reply == QMessageBox.Discard:
-                self.speech_service.stop()
                 event.accept()
             else:
                 event.ignore()
         else:
-            self.speech_service.stop()
             event.accept()
