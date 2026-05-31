@@ -3,7 +3,7 @@ import os
 import time
 import threading
 import pyttsx3
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QCloseEvent, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -170,7 +170,7 @@ class MainWindow(QWidget):
         self.shift_combo.installEventFilter(self)
 
     def eventFilter(self, watched, event):
-        if watched == self.shift_combo and event.type() == Qt.KeyPress:
+        if watched == self.shift_combo and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 self.mark_attendance()
                 return True
