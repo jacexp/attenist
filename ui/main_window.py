@@ -29,6 +29,8 @@ from services.attendance_service import AttendanceService
 from database.database_service import DatabaseService
 from ui.employee_management_tab import EmployeeManagementTab
 from ui.ocr_attendance_tab import OCRAttendanceTab
+from core.config import config
+from ui.api_key_dialog import FirstLaunchManager
 
 # Configure Audit Logging
 logging.basicConfig(
@@ -64,6 +66,9 @@ class MainWindow(QWidget):
         # Initialize database service and sync employees
         self.database_service = DatabaseService()
         self._sync_employees_to_database()
+        
+        # First launch check: ensure API key is configured
+        FirstLaunchManager(self).check_and_configure()
 
         # Build dates from the first valid attendance sheet
         self.dates = {}
@@ -145,11 +150,10 @@ class MainWindow(QWidget):
         self.employee_mgmt_tab = EmployeeManagementTab(self.database_service)
         self.tab_widget.addTab(self.employee_mgmt_tab, "Employee Management")
         
-        # OCR Attendance tab
+        # OCR Attendance tab (uses config.json for API key)
         self.ocr_attendance_tab = OCRAttendanceTab(
             self.database_service, 
-            self.attendance_service,
-            api_key=os.getenv('GOOGLE_API_KEY')  # Get API key from environment
+            self.attendance_service
         )
         self.tab_widget.addTab(self.ocr_attendance_tab, "OCR Attendance")
         

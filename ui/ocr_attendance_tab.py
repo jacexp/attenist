@@ -24,6 +24,8 @@ from services.ocr.validation_service import OCRValidationService, OCRValidationR
 from database.database_service import DatabaseService
 from core.models import Employee
 from services.attendance_service import AttendanceService
+from core.config import config
+from ui.api_key_dialog import FirstLaunchManager
 
 
 class OCRProcessingThread(QThread):
@@ -148,12 +150,10 @@ class EmployeeSearchDialog(QDialog):
 class OCRAttendanceTab(QWidget):
     """Main OCR Attendance tab widget."""
     
-    def __init__(self, database_service: DatabaseService, attendance_service: AttendanceService, 
-                 api_key: str = None):
+    def __init__(self, database_service: DatabaseService, attendance_service: AttendanceService):
         super().__init__()
         self.database_service = database_service
         self.attendance_service = attendance_service
-        self.api_key = api_key
         
         # Initialize services
         self.ocr_service = None
@@ -162,12 +162,13 @@ class OCRAttendanceTab(QWidget):
         # Data
         self.validation_results: List[OCRValidationResult] = []
         self.current_images: List[str] = []
+        self.ocr_enabled = False
         
         # UI setup
         self.setup_ui()
         self.setup_connections()
         
-        # Initialize OCR service
+        # Initialize OCR service (uses config)
         self.initialize_ocr_service()
     
     def setup_ui(self):
@@ -360,25 +361,71 @@ class OCRAttendanceTab(QWidget):
         self.update_timer.start(1000)  # Update every second
     
     def initialize_ocr_service(self):
-        """Initialize the OCR service and test connection."""
-        try:
-            self.ocr_service = OCRService(self.api_key)
-            
-            # Test connection in background
-            self.api_status_label.setText("Gemini API: Testing connection...")
-            
-            # For simplicity, assume connection is OK
-            # In production, you might want to test this properly
-            self.api_status_label.setText("Gemini API: Ready")
-            self.api_status_label.setStyleSheet("color: green;")
-            
-        except Exception as e:
-            logging.error(f"Failed to initialize OCR service: {e}")
-            self.api_status_label.setText("Gemini API: Error")
-            self.api_status_label.setStyleSheet("color: red;")
-            QMessageBox.critical(self, "OCR Service Error", 
-                               f"Failed to initialize Gemini API:\n{e}\n\n"
-                               f"Please check your API key and internet connection.")
+        """Initialize the OCR service using config.json."""
+        # Startup diagnostics
+        has_key = config.has_valid_api_key()
+        logging.info(f"=== OCR Startup Diagnostics ===")
+        logging.info(f"Config file found: True")
+        logging.info(f"API key configured: {config.has_valid_api_key()}")
+        logging.info(f"OCR enabled: {config.has_valid_api_key()}")
+        logging.info(f"==================================")
+        
+        if config.has_valid_api_key():
+            try:
+                self.ocr_service = OCRService(config.get_gemini_api_key())
+                self.ocr_enabled = True
+                self.api_status_label.setText("Gemini API: Ready")
+                self.api_status_label.setStyleSheet("color: green;")
+                self._enable_ocr_controls(True)
+                logging.info("OCR service initialized successfully")
+            except Exception as e:
+                logging.error(f"Failed to initialize OCR service: {e}")
+                self.api_status_label.setText("Gemini API: Error")
+                self.api_status_label.setStyleSheet("color: red;")
+                self._enable_ocr_controls(False)
+        else:
+            # No API key configured - show disabled state with configure button
+            self.ocr_enabled = False
+            self.api_status_label.setText("Gemini API: Not Configured")
+            self.api_status_label.setStyleSheet("color: orange;")
+            self._enable_ocr_controls(False)
+            self._add_configure_button()
+            logging.info("OCR disabled: No API key configured")
+    
+    def _enable_ocr_controls(self, enabled: bool):
+        """Enable or disable OCR-related controls."""
+        self.ocr_enabled = enabled
+        self.process_button.setEnabled(enabled)
+        self.browse_button.setEnabled(enabled)
+        if hasattr(self, 'configure_btn') and self.configure_btn:
+            self.configure_btn.setVisible(not enabled)
+    
+    def _add_configure_button(self):
+        """Add a 'Configure API Key' button to the header."""
+        if hasattr(self, 'configure_btn') and self.configure_btn:
+            return  # Already added
+        
+        self.configure_btn = QPushButton("Configure Gemini API Key")
+        self.configure_btn.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold; padding: 8px 16px;")
+        self.configure_btn.clicked.connect(self._configure_api_key)
+        
+        # Add to header group's stats layout
+        for child in self.children():
+            if isinstance(child, QGroupBox) and child.title() == "OCR Attendance Processing":
+                layout = child.layout()
+                if layout and layout.count() > 0:
+                    stats_layout = layout.itemAt(0).layout() if layout.itemAt(0) else None
+                    if stats_layout:
+                        stats_layout.addWidget(self.configure_btn)
+                        break
+    
+    def _configure_api_key(self):
+        """Open API key configuration dialog."""
+        from ui.api_key_dialog import FirstLaunchManager
+        manager = FirstLaunchManager(self)
+        if manager.show_reconfigure_dialog():
+            # Key was saved, reinitialize
+            self.initialize_ocr_service()
     
     def browse_images(self):
         """Open file dialog to select images."""
@@ -415,8 +462,9 @@ class OCRAttendanceTab(QWidget):
             QMessageBox.warning(self, "No Images", "Please select images to process.")
             return
         
-        if not self.ocr_service:
-            QMessageBox.critical(self, "OCR Service Error", "OCR service is not available.")
+        if not self.ocr_enabled or not self.ocr_service:
+            QMessageBox.warning(self, "OCR Not Configured", 
+                              "Please configure your Gemini API key first using the 'Configure Gemini API Key' button.")
             return
         
         # Clear previous results
