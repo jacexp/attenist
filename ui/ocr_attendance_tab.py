@@ -1067,6 +1067,21 @@ class OCRAttendanceTab(QWidget):
                               "Please select an active sheet in the main window before processing.")
             return
 
+        # Check if selected model supports vision
+        idx = self.model_combo.currentIndex()
+        if idx >= 0:
+            supports_vision = self.model_combo.itemData(idx, Qt.UserRole + 1)
+            if not supports_vision:
+                model_name = self.model_combo.currentText()
+                QMessageBox.warning(
+                    self, "Model Not Compatible",
+                    f"The selected model does not support image processing.\n\n"
+                    f"Current model: {model_name}\n\n"
+                    f"Please select a vision-capable model from the dropdown "
+                    f"(models labeled 'Vision') before processing images."
+                )
+                return
+
         self.validation_results.clear()
         self.raw_response_text.clear()
 
