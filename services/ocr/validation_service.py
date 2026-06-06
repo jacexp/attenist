@@ -240,7 +240,7 @@ class OCRValidationService:
                     id_ratio = fuzz.ratio(eid, q)
                     name_ratio = fuzz.partial_ratio(name, q)
                     score = max(id_ratio, name_ratio)
-                    if score < 20:
+                    if score < 10:
                         if diagnostics is not None:
                             diagnostics["filtered_by_score"] += 1
                             diagnostics["dropped"].append(
@@ -259,49 +259,72 @@ class OCRValidationService:
         return scored
 
     def search_employees_for_manual_match(self, query: str, sheet_name: Optional[str] = None, limit: int = 100) -> List[Employee]:
+        q = query.strip()
+        if not q:
+            return []
+
+        diagnostics = {
+            "query": q,
+            "sheet_name": sheet_name,
+            "exact_match": None,
+            "like_matches": 0,
+            "scored": 0,
+            "displayed": 0,
+            "filtered_by_score": 0,
+            "truncated_by_limit": 0,
+            "dropped": [],
+        }
+
+        results = {}  # emp_id -> (employee, score)
+
+        # Step 1: Exact ID match (always, bypasses sheet filter for discovery)
+        try:
+            exact = self.database_service.get_employee_as_object(q.upper())
+            if exact:
+                results[exact.employee_id] = (exact, 100)
+                diagnostics["exact_match"] = exact.employee_id
+        except Exception as e:
+            logging.warning(f"CORRECTION_SEARCH: exact lookup error: {e}")
+
+        # Step 2: SQL LIKE search (broad, sheet-filtered)
         try:
             db_limit = limit * 3
             raw = self.database_service.search_employees_as_objects(
-                query, db_limit, sheet_name=sheet_name
+                q, db_limit, sheet_name=sheet_name
             )
+            diagnostics["like_matches"] = len(raw)
 
-            diagnostics = {
-                "query": query,
-                "sheet_name": sheet_name,
-                "db_matches": len(raw),
-                "returned": 0,
-                "displayed": 0,
-                "filtered_by_score": 0,
-                "filtered_by_sheet": 0,
-                "truncated_by_limit": 0,
-                "dropped": [],
-            }
-
-            scored = self._score_employees(query, raw, diagnostics)
-            scored.sort(key=lambda x: x["score"], reverse=True)
-
-            diagnostics["returned"] = len(scored)
-            top = scored[:limit]
-            diagnostics["displayed"] = len(top)
-            diagnostics["truncated_by_limit"] = max(0, len(scored) - limit)
-
-            # Log all dropped employees
-            for emp_log in diagnostics["dropped"]:
-                logging.info(f"CORRECTION_SEARCH: DROPPED {emp_log}")
-
-            logging.info(
-                f"CORRECTION_SEARCH: "
-                f"query='{query}' sheet='{sheet_name or 'ALL'}' "
-                f"db_matches={diagnostics['db_matches']} "
-                f"scored={diagnostics['returned']} "
-                f"displayed={diagnostics['displayed']} "
-                f"truncated={diagnostics['truncated_by_limit']} "
-                f"filtered_by_score={diagnostics['filtered_by_score']}"
-            )
-            return [s["employee"] for s in top]
+            scored = self._score_employees(q, raw, diagnostics)
+            for s in scored:
+                eid = s["employee"].employee_id
+                if eid not in results or s["score"] > results[eid][1]:
+                    results[eid] = (s["employee"], s["score"])
         except Exception as e:
-            logging.error(f"CORRECTION_SEARCH: ERROR query='{query}': {e}")
-            return []
+            logging.error(f"CORRECTION_SEARCH: LIKE search error: {e}")
+
+        # Step 3: Sort by score descending
+        sorted_results = sorted(results.values(), key=lambda x: x[1], reverse=True)
+        diagnostics["scored"] = len(sorted_results)
+
+        top = sorted_results[:limit]
+        diagnostics["displayed"] = len(top)
+        diagnostics["truncated_by_limit"] = max(0, len(sorted_results) - limit)
+
+        # Log all dropped employees
+        for emp_log in diagnostics["dropped"]:
+            logging.info(f"CORRECTION_SEARCH: DROPPED {emp_log}")
+
+        logging.info(
+            f"CORRECTION_SEARCH: "
+            f"query='{q}' sheet='{sheet_name or 'ALL'}' "
+            f"exact={diagnostics['exact_match'] or 'none'} "
+            f"like_matches={diagnostics['like_matches']} "
+            f"scored={diagnostics['scored']} "
+            f"displayed={diagnostics['displayed']} "
+            f"truncated={diagnostics['truncated_by_limit']} "
+            f"filtered_by_score={diagnostics['filtered_by_score']}"
+        )
+        return [emp for emp, _score in top]
 
     def get_validation_statistics(self) -> Dict:
         return self.validation_stats.copy()
