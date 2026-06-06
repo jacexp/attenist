@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QProgressDialog,
+    QTabWidget,
 )
 
 from workbook.loader import WorkbookLoader
@@ -25,6 +26,9 @@ from workbook.indexes.date import DateIndexer
 
 from services.search_service import SearchService
 from services.attendance_service import AttendanceService
+from database.database_service import DatabaseService
+from ui.employee_management_tab import EmployeeManagementTab
+from ui.ocr_attendance_tab import OCRAttendanceTab
 
 # Configure Audit Logging
 logging.basicConfig(
@@ -57,6 +61,10 @@ class MainWindow(QWidget):
             self.workbook
         )
 
+        # Initialize database service and sync employees
+        self.database_service = DatabaseService()
+        self._sync_employees_to_database()
+
         # Build dates from the first valid attendance sheet
         self.dates = {}
         for sheet in self.workbook.worksheets:
@@ -74,7 +82,8 @@ class MainWindow(QWidget):
             )
 
         self.search_service = SearchService(
-            self.employees
+            employees=self.employees,  # Keep for legacy fallback
+            database_service=self.database_service
         )
 
         self.attendance_service = AttendanceService(
@@ -93,7 +102,61 @@ class MainWindow(QWidget):
         self.connect_signals()
         self.setup_shortcuts()
 
+    def _sync_employees_to_database(self):
+        """Sync workbook employees to SQLite database using new DatabaseService."""
+        try:
+            stats = self.database_service.sync_employees_from_workbook(self.employees)
+            logging.info(
+                f"Employee sync complete: {stats['inserted']} inserted, "
+                f"{stats['updated']} updated, {stats['errors']} errors, "
+                f"{stats['total_scanned']} total scanned"
+            )
+            
+            # Show sync results to user if there were any issues
+            if stats['errors'] > 0:
+                QMessageBox.warning(
+                    self,
+                    "Database Sync Warning",
+                    f"Sync completed with {stats['errors']} errors.\n"
+                    f"Successfully processed: {stats['inserted'] + stats['updated']} employees\n"
+                    f"Check logs for details."
+                )
+        except Exception as e:
+            logging.error(f"Employee database sync failed: {e}")
+            QMessageBox.critical(
+                self,
+                "Database Sync Error", 
+                f"Critical error during employee sync: {e}\n"
+                f"The application may not function correctly."
+            )
+
     def build_ui(self):
+        main_layout = QVBoxLayout()
+        
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        
+        # Attendance tab
+        attendance_tab = QWidget()
+        self.build_attendance_ui(attendance_tab)
+        self.tab_widget.addTab(attendance_tab, "Attendance")
+        
+        # Employee Management tab
+        self.employee_mgmt_tab = EmployeeManagementTab(self.database_service)
+        self.tab_widget.addTab(self.employee_mgmt_tab, "Employee Management")
+        
+        # OCR Attendance tab
+        self.ocr_attendance_tab = OCRAttendanceTab(
+            self.database_service, 
+            self.attendance_service,
+            api_key=os.getenv('GOOGLE_API_KEY')  # Get API key from environment
+        )
+        self.tab_widget.addTab(self.ocr_attendance_tab, "OCR Attendance")
+        
+        main_layout.addWidget(self.tab_widget)
+        self.setLayout(main_layout)
+
+    def build_attendance_ui(self, parent_widget):
         main_layout = QHBoxLayout()
         
         # Left Panel: Data Entry
@@ -152,7 +215,7 @@ class MainWindow(QWidget):
         main_layout.addLayout(entry_layout)
         main_layout.addLayout(summary_layout)
 
-        self.setLayout(main_layout)
+        parent_widget.setLayout(main_layout)
 
     def connect_signals(self):
         self.search_box.textChanged.connect(self.on_search_changed)

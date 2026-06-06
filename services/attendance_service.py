@@ -14,6 +14,27 @@ class AttendanceService:
         self.dates = dates
         self._backup_created = False
 
+    def _get_evaluated_value(self, cell):
+        """Get evaluated value for formula cells, otherwise return cell.value."""
+        if cell.data_type == 'f' and isinstance(cell.value, str) and cell.value.startswith('='):
+            formula = cell.value[1:]
+            ref_col = 0
+            ref_row = 0
+            
+            for char in formula:
+                if char.isalpha():
+                    ref_col = ref_col * 26 + (ord(char.upper()) - ord('A') + 1)
+                elif char.isdigit():
+                    ref_row = ref_row * 10 + int(char)
+            
+            if ref_col > 0 and ref_row > 0:
+                ref_cell = cell.parent.cell(row=ref_row, column=ref_col)
+                if ref_cell.data_type == 'f' and isinstance(ref_cell.value, str) and ref_cell.value.startswith('='):
+                    return self._get_evaluated_value(ref_cell)
+                return ref_cell.value
+        
+        return cell.value
+
     def mark(
         self,
         employee,
@@ -29,7 +50,7 @@ class AttendanceService:
             column=column,
         )
 
-        old_value = cell.value
+        old_value = self._get_evaluated_value(cell)
 
         cell.value = shift
 
