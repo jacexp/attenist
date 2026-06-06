@@ -109,19 +109,19 @@ class DatabaseService:
         
         return self.migration_stats.copy()
     
-    def search_employees(self, query: str, limit: int = 50) -> List[Dict]:
+    def search_employees(self, query: str, limit: int = 50, sheet_name: Optional[str] = None) -> List[Dict]:
         """
         Search employees in SQLite database.
         Returns list of employee dictionaries compatible with UI.
         """
-        return self.repository.search_employees(query, limit)
+        return self.repository.search_employees(query, limit, sheet_name=sheet_name)
     
-    def search_employees_as_objects(self, query: str, limit: int = 50) -> List[Employee]:
+    def search_employees_as_objects(self, query: str, limit: int = 50, sheet_name: Optional[str] = None) -> List[Employee]:
         """
         Search employees and return as Employee objects for backward compatibility.
         Used by existing search service and UI components.
         """
-        db_results = self.repository.search_employees(query, limit)
+        db_results = self.repository.search_employees(query, limit, sheet_name=sheet_name)
         employee_objects = []
         
         for result in db_results:
@@ -332,3 +332,17 @@ class DatabaseService:
     def get_employees_by_sheet(self, sheet_name: str) -> List[Dict]:
         """Get all employees from a specific Excel sheet."""
         return self.repository.get_employees_by_sheet(sheet_name)
+
+    def get_employees_by_sheet_as_objects(self, sheet_name: str) -> List[Employee]:
+        """Get all employees from a sheet as Employee objects."""
+        rows = self.repository.get_employees_by_sheet(sheet_name)
+        return [
+            Employee(
+                employee_id=r["emp_id"],
+                name=r["emp_name"],
+                rank=r["rank"] or "",
+                sheet_name=r["sheet_name"] or "",
+                row=r["row_number"] or 0,
+            )
+            for r in rows
+        ]

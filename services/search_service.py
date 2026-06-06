@@ -32,15 +32,16 @@ class SearchService:
             return []
 
         try:
-            # First, try exact SQLite search (fast)
+            # First, try exact SQLite search (fast) — sheet filtered at DB level
             db_results = self.database_service.search_employees(query, limit * 2, sheet_name=sheet_name)
             
             if db_results:
-                # Convert database results to Employee objects
-                employee_objects = self.database_service.search_employees_as_objects(query, limit * 2)
+                # Convert database results to Employee objects (sheet-filtered from DB)
+                employee_objects = self.database_service.search_employees_as_objects(
+                    query, limit * 2, sheet_name=sheet_name
+                )
                 
-                # If sheet_name was provided, filter the employee objects (the DB call should have done this, 
-                # but for robust matching with fuzzy fallback we filter them here too)
+                # Sheet filter safeguard: double-check no cross-sheet results
                 if sheet_name:
                     employee_objects = [emp for emp in employee_objects if emp.sheet_name == sheet_name]
                 
@@ -79,7 +80,7 @@ class SearchService:
                     return results[:limit]
             
             # If SQLite search didn't find good matches, try fuzzy search
-            # Get more employees from database for fuzzy matching
+            # Get more employees from database for fuzzy matching (sheet-scoped)
             all_employees = self.database_service.search_employees("", limit * 5, sheet_name=sheet_name)
             
             if all_employees:
@@ -91,6 +92,9 @@ class SearchService:
                     # Convert to Employee object
                     emp_obj = self.database_service.get_employee_as_object(db_emp["emp_id"])
                     if emp_obj:
+                        # Double-check sheet scope
+                        if sheet_name and emp_obj.sheet_name != sheet_name:
+                            continue
                         employee_objects.append(emp_obj)
                         # Build maps for fuzzy search
                         by_id.setdefault(emp_obj.employee_id.upper(), []).append(emp_obj)

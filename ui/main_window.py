@@ -19,75 +19,25 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
-from workbook.loader import WorkbookLoader
-
-from workbook.indexes.employee import EmployeeIndexer
-from workbook.indexes.date import DateIndexer
-
 from services.search_service import SearchService
 from services.attendance_service import AttendanceService
-from database.database_service import DatabaseService
 from ui.employee_management_tab import EmployeeManagementTab
 from ui.ocr_attendance_tab import OCRAttendanceTab
-from core.config import config
-from ui.api_key_dialog import FirstLaunchManager
 
-# Configure Audit Logging
-logging.basicConfig(
-    filename="attenist.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
 
 class MainWindow(QWidget):
-    def __init__(self, workbook_path):
+    def __init__(self, workbook, employees, dates, database_service, workbook_path):
         super().__init__()
 
         self.setWindowTitle("Attenist")
         self.workbook_path = workbook_path
-
-        try:
-            # Load workbook
-            self.workbook = WorkbookLoader().load(
-                self.workbook_path
-            )
-        except PermissionError:
-            QMessageBox.critical(
-                self,
-                "File Locked",
-                f"Cannot open '{os.path.basename(self.workbook_path)}'.\n\nPlease close it in Excel and try again."
-            )
-            raise SystemExit
-
-        self.employees = EmployeeIndexer().build(
-            self.workbook
-        )
-
-        # Initialize database service and sync employees
-        self.database_service = DatabaseService()
-        self._sync_employees_to_database()
-        
-        # First launch check: ensure API key is configured
-        FirstLaunchManager(self).check_and_configure()
-
-        # Build dates from the first valid attendance sheet
-        self.dates = {}
-        for sheet in self.workbook.worksheets:
-            has_employees = any(emp.sheet_name == sheet.title for emp in self.employees)
-            if has_employees:
-                self.dates = DateIndexer().build(sheet)
-                if self.dates:
-                    break
-
-        if not self.dates:
-            QMessageBox.critical(
-                self,
-                "Error",
-                "No valid attendance dates found in workbook."
-            )
+        self.workbook = workbook
+        self.employees = employees
+        self.dates = dates
+        self.database_service = database_service
 
         self.search_service = SearchService(
-            employees=self.employees,  # Keep for legacy fallback
+            employees=self.employees,
             database_service=self.database_service
         )
 
@@ -107,34 +57,6 @@ class MainWindow(QWidget):
         self.build_ui()
         self.connect_signals()
         self.setup_shortcuts()
-
-    def _sync_employees_to_database(self):
-        """Sync workbook employees to SQLite database using new DatabaseService."""
-        try:
-            stats = self.database_service.sync_employees_from_workbook(self.employees)
-            logging.info(
-                f"Employee sync complete: {stats['inserted']} inserted, "
-                f"{stats['updated']} updated, {stats['errors']} errors, "
-                f"{stats['total_scanned']} total scanned"
-            )
-            
-            # Show sync results to user if there were any issues
-            if stats['errors'] > 0:
-                QMessageBox.warning(
-                    self,
-                    "Database Sync Warning",
-                    f"Sync completed with {stats['errors']} errors.\n"
-                    f"Successfully processed: {stats['inserted'] + stats['updated']} employees\n"
-                    f"Check logs for details."
-                )
-        except Exception as e:
-            logging.error(f"Employee database sync failed: {e}")
-            QMessageBox.critical(
-                self,
-                "Database Sync Error", 
-                f"Critical error during employee sync: {e}\n"
-                f"The application may not function correctly."
-            )
 
     def build_ui(self):
         main_layout = QVBoxLayout()

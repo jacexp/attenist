@@ -80,21 +80,26 @@ class EmployeeSearchDialog(QDialog):
         self.setup_ui()
 
     def setup_ui(self):
-        self.setWindowTitle("Search Employee")
+        self.setWindowTitle("Search Employee — Correction")
         self.setModal(True)
-        self.resize(500, 400)
+        self.resize(650, 500)
 
         layout = QVBoxLayout()
 
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Search:"))
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Enter employee ID or name...")
+        self.search_input.setPlaceholderText("Type employee ID or name (min 1 character)")
         self.search_input.textChanged.connect(self.perform_search)
         search_layout.addWidget(self.search_input)
         layout.addLayout(search_layout)
 
+        self.count_label = QLabel("")
+        self.count_label.setStyleSheet("color: #666; font-size: 9pt; margin-bottom: 2px;")
+        layout.addWidget(self.count_label)
+
         self.results_list = QListWidget()
+        self.results_list.setAlternatingRowColors(True)
         self.results_list.itemDoubleClicked.connect(self.select_employee)
         layout.addWidget(self.results_list)
 
@@ -107,20 +112,30 @@ class EmployeeSearchDialog(QDialog):
 
     def perform_search(self, query: str):
         self.results_list.clear()
+        self.count_label.setText("")
 
-        if len(query) < 2:
+        if len(query) < 1:
             return
 
         try:
             employees = self.validation_service.search_employees_for_manual_match(
-                query, sheet_name=self.sheet_name, limit=20
+                query, sheet_name=self.sheet_name, limit=100
             )
 
+            self.count_label.setText(f"Results: {len(employees)}")
+
             for emp in employees:
-                item_text = f"{emp.employee_id} - {emp.name} ({emp.rank}) [{emp.sheet_name}]"
+                item_text = f"{emp.employee_id:8s} | {emp.name:25s} | {emp.sheet_name or '':12s}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, emp)
                 self.results_list.addItem(item)
+
+            logging.info(
+                f"SHEET_SCOPED: EmployeeSearchDialog display "
+                f"active_sheet='{self.sheet_name}' "
+                f"query='{query}' matches_returned={len(employees)} "
+                f"all_same_sheet={all(e.sheet_name == self.sheet_name for e in employees) if employees else 'N/A'}"
+            )
 
         except Exception as e:
             logging.error(f"Employee search failed: {e}")
@@ -270,7 +285,14 @@ class VerificationWizard(QDialog):
 
         if self.suggested_matches and self.match_list.currentItem():
             emp = self.match_list.currentItem().data(Qt.UserRole)
-            self.validation_service.manual_correction(result, selected_employee=emp)
+            logging.info(
+                f"SHEET_SCOPED: accept_match "
+                f"employee={emp.employee_id} emp_sheet='{emp.sheet_name}' "
+                f"active_sheet='{self.sheet_name}'"
+            )
+            self.validation_service.manual_correction(
+                result, selected_employee=emp, sheet_name=self.sheet_name
+            )
 
         self.current_index += 1
         self.show_current_record()
@@ -280,7 +302,15 @@ class VerificationWizard(QDialog):
 
         dialog = EmployeeSearchDialog(self.validation_service, sheet_name=self.sheet_name, parent=self)
         if dialog.exec() == QDialog.Accepted and dialog.selected_employee:
-            self.validation_service.manual_correction(result, selected_employee=dialog.selected_employee)
+            emp = dialog.selected_employee
+            logging.info(
+                f"SHEET_SCOPED: change_match "
+                f"employee={emp.employee_id} emp_sheet='{emp.sheet_name}' "
+                f"active_sheet='{self.sheet_name}'"
+            )
+            self.validation_service.manual_correction(
+                result, selected_employee=emp, sheet_name=self.sheet_name
+            )
             self.current_index += 1
             self.show_current_record()
 

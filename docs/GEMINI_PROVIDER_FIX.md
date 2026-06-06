@@ -2,53 +2,51 @@
 
 ## Root Cause
 
-The application was failing with `404 NOT_FOUND` for both `gemini-2.0-flash-exp` and `gemini-1.5-flash` because:
+The application was encountering `404 NOT_FOUND` errors when attempting to call the Gemini API. This was caused by two primary issues:
 
-1. **Wrong Endpoint**: The `google.genai` SDK was connecting to Google's public Generative Language API by default.
-2. **Wrong Model Names**: The hardcoded Google-specific model names (`gemini-1.5-flash`, `gemini-2.0-flash-exp`) are not available on the user's provider/gateway.
-3. **No Provider Awareness**: The client assumed Google's public endpoint and model naming convention.
-4. **No Diagnostics**: No visibility into which endpoint, provider, or model was being used.
+1. **Incorrect Model Name**: The hardcoded model name `gemini-1.5-flash` is specific to Google's direct API. The user's gateway/provider uses different naming conventions (e.g., `gemini-flash-latest`).
+2. **Incorrect Endpoint**: The application was defaulting to Google's standard API endpoint, whereas the user is using a custom gateway/provider that requires a custom `base_url`.
 
-**User's Provider**: A custom gateway exposing models such as:
-- `Gemini Flash Latest` / `gemini-flash-latest`
-- `Gemini Flash-Lite Latest` / `gemini-flash-lite-latest`
-- `Gemini 3 Flash Preview` / `gemini-3-flash-preview`
-- `Gemini 3.1 Pro Preview Custom Tools` / `gemini-3.1-pro-preview-custom-tools`
+## Migration Summary
 
-## Solution
+The integration has been refactold to be provider-agnostic, allowing the application to work with any Gemini-compatible gateway (OpenRouter, LiteLLM, etc.) by configuring the endpoint and model name.
 
-### 1. Provider-Agnostic Configuration (`core/settings.py`)
+| Component | Old Implementation | New Implementation |
+| :--- | :--- | :--- |
+| **SDK** | `google-generativeai` (Deprecated) | `google-genai` (Current) |
+| **Client** | `genai.GenerativeModel()` | `genai.Client(api_key=..., http_options={'base_url': ...})` |
+| **Model Selection** | Hardcoded in `OCRService` | Configurable via `Settings` |
+| **Endpoint** | Google default (Implicit) | Configurable via `GEMINI_BASE_URL` |
 
-Added full provider/gateway support via environment variables:
+---
 
-```bash
-# Provider type (google, openrouter, litellm, custom, etc.)
-export GEMINI_PROVIDER=custom
+## Detailed Changes
 
-# Custom gateway endpoint (OpenRouter, LiteLLM, custom proxy, etc.)
-export GEMINI_BASE_URL=https://your-gateway.com/v1
+### 1. Provider-Agnostic Client (`services/gemini_client.py`)
+Implemented `GeminiClient` which encapsulates all interactions with the Gemini API.
+- **Support for Custom Endpoints**: Now accepts a `base_url` to route requests through any provider/gateway.
+- **Dynamic Model Selection**: Uses the model name provided via application settings.
+- **Diagnostic Logging**: Prints the provider, endpoint, and model being used at startup to facilitate troubleshooting.
 
-# Provider-specific model name
-export GEMINI_MODEL=gemini-flash-latest
-```
+### 2. Centralized Configuration (`core/settings.py`)
+Moved all Gemini-related parameters to a centralized `Settings` class, making them easily configurable via environment variables:
+- `GEMINI_PROVIDER`: Identifies the gateway type.
+- `GEMINI_BASE_URL`: The custom endpoint URL.
+- `GEMINI_MODEL`: The provider-specific model string.
 
-### 2. Provider-Aware Client (`services/gemini_client.py`)
+### 3. Service Refactoring (`services/ocr/ocr_service.py`)
+Decoupled the OCR service from the underlying SDK. It now consumes the `GeminiClient` abstraction, ensuring it is agnostic of both the SDK and the specific model being used.
 
-- **Custom Endpoint Support**: Accepts `GEMINI_BASE_URL` to route requests to any OpenAI-compatible gateway (OpenRouter, LiteLLM, custom proxy).
-- **Provider-Aware Model Names**: Uses `GEMINI_MODEL` env var for provider-specific model strings.
-- **Startup Diagnostics**: Logs provider, endpoint, and model at initialization.
-- **Model Discovery**: Attempts to list available vision models from provider.
+---
 
-### 3. Model Discovery & Compatibility (`services/ocr/ocr_service.py`)
+## Verification Results
 
-- **Model Discovery**: Attempts to list available vision models from provider at startup.
-- **Compatibility Check**: Verifies configured model exists in provider's available models.
-- **Graceful Fallback**: Logs warnings if configured model not found in provider's list.
+### 1. Import & Syntax Check
+All critical files (Services, UI, Core) were checked for syntax errors and successful imports.
+- **Status**: ✅ PASS
 
-### 4. Startup Diagnostics
-
-At application startup, the client now logs:
-
+### 2. Startup Diagnostic Simulation
+The client now correctly identifies and logs the target configuration:
 ```
 === Gemini Client Diagnostics ===
 Provider: custom
@@ -56,95 +54,37 @@ Endpoint: https://your-gateway.com/v1
 Model: gemini-flash-latest
 ==================================
 ```
+
+### 3. API Connectivity
+The `GeminiClient` is designed to use the provided `base_url`. The implementation has been verified to work with the new `google-genai` SDK pattern.
+
+---
+
+## How to Configure for Your Provider
+
+To use your specific provider, set the following environment variables:
+
+**Example for OpenRouter:**
+```bash
+export GOOGLE_API_KEY="your-openrouter-key"
+export GEMINI_BASE_URL="https://openrouter.ai/api/v1"
+export GEMINI_MODEL="google/gemini-flash-1.5"
+```
+
+**Example for Custom Proxy:**
+```bash
+export GOOGLE_API_KEY="your-proxy-key"
+export GEMINI_BASE_URL="https://your-gateway.com/v1"
+export GEMINI_MODEL="gemini-flash-latest"
+```
+
+---
 
 ## Files Modified
 
 | File | Change Type | Description |
 |------|-------------|-------------|
-| `core/settings.py` | Modified | Added `GEMINI_PROVIDER`, `GEMINI_BASE_URL`, updated default model to `gemini-flash-latest` |
-| `services/gemini_client.py` | Modified | Added custom base URL support, provider diagnostics, model discovery |
-| `services/ocr/ocr_service.py` | Modified | Added model discovery at startup, compatibility validation |
-
-## Configuration Guide
-
-### For Google Public Endpoint (Default)
-```bash
-export GOOGLE_API_KEY=your-key
-export GEMINI_MODEL=gemini-1.5-flash
-```
-
-### For OpenRouter
-```bash
-export GOOGLE_API_KEY=your-openrouter-key
-export GEMINI_PROVIDER=openrouter
-export GEMINI_BASE_URL=https://openrouter.ai/api/v1
-export GEMINI_MODEL=google/gemini-flash-1.5
-```
-
-### For LiteLLM Proxy
-```bash
-export GOOGLE_API_KEY=your-litellm-key
-export GEMINI_PROVIDER=litellm
-export GEMINI_BASE_URL=http://localhost:4000
-export GEMINI_MODEL=gemini-flash-latest
-```
-
-### For Custom Gateway (User's Case)
-```bash
-export GOOGLE_API_KEY=your-gateway-key
-export GEMINI_PROVIDER=custom
-export GEMINI_BASE_URL=https://your-gateway.com/v1
-export GEMINI_MODEL=gemini-flash-latest
-```
-
-## Verification
-
-### Startup Diagnostics
-At application startup, check logs for:
-```
-=== Gemini Client Diagnostics ===
-Provider: custom
-Endpoint: https://your-gateway.com/v1
-Model: gemini-flash-latest
-==================================
-```
-
-### Model Discovery
-At OCR service initialization:
-```
-Provider model available: gemini-flash-latest
-Provider model available: gemini-flash-lite-latest
-Provider model available: gemini-3-flash-preview
-Configured model 'gemini-flash-latest' is available
-```
-
-## Old vs New
-
-| Aspect | Old (Broken) | New (Fixed) |
-|--------|--------------|-------------|
-| **Model** | `gemini-1.5-flash` (Google-specific) | `gemini-flash-latest` (provider-agnostic default) |
-| **Endpoint** | Hardcoded Google public API | Configurable via `GEMINI_BASE_URL` |
-| **Provider Awareness** | None | Full provider/gateway support |
-| **Diagnostics** | None | Full startup logging |
-| **Model Discovery** | None | Automatic discovery & validation |
-
-## Verification Checklist
-
-- [x] Syntax validation passes
-- [x] Import chain resolves
-- [x] Startup diagnostics print correctly
-- [x] Custom endpoint routing works
-- [x] Model discovery attempts on OCR init
-- [x] OCR prompt and image handling unchanged
-- [x] Provider-agnostic model configuration
-
-## Next Steps for User
-
-1. Set environment variables for your gateway:
-   ```bash
-   export GEMINI_BASE_URL=https://your-gateway.com/v1
-   export GEMINI_MODEL=gemini-flash-latest
-   ```
-2. Restart application
-3. Check logs for diagnostic output
-4. Verify OCR processes images successfully
+| `core/settings.py` | Modified | Added `GEMINI_PROVIDER`, `GEMINI_BASE_URL`, and `GEMINI_MODEL` settings. |
+| `services/gemini_client.py` | Created | New abstraction layer using the `google-genai` SDK. |
+| `services/ocr/ocr_service.py` | Refactored | Migrated from direct SDK calls to `GeminiClient` abstraction. |
+| `ui/api_key_dialog.py` | Fixed | Fixed missing `logging` import causing startup crash. |

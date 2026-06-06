@@ -130,8 +130,18 @@ class OCRValidationService:
     def _find_exact_match(self, emp_id: str, sheet_name: Optional[str] = None) -> Optional[Employee]:
         try:
             emp = self.database_service.get_employee_as_object(emp_id)
-            if emp and sheet_name and emp.sheet_name != sheet_name:
-                return None
+            if emp and sheet_name:
+                if emp.sheet_name != sheet_name:
+                    logging.info(
+                        f"SHEET_SCOPED: _find_exact_match rejected cross-sheet "
+                        f"emp_id='{emp_id}' emp_sheet='{emp.sheet_name}' "
+                        f"active_sheet='{sheet_name}'"
+                    )
+                    return None
+                logging.info(
+                    f"SHEET_SCOPED: _find_exact_match matched "
+                    f"emp_id='{emp_id}' sheet='{sheet_name}'"
+                )
             return emp
         except Exception as e:
             logging.error(f"Database lookup failed for {emp_id}: {e}")
@@ -139,8 +149,7 @@ class OCRValidationService:
 
     def find_possible_matches(self, ocr_id: str, ocr_name: str, sheet_name: str, limit: int = 5) -> List[Dict]:
         try:
-            all_emps = self.database_service.search_employees_as_objects("", 500)
-            sheet_emps = [e for e in all_emps if e.sheet_name == sheet_name]
+            sheet_emps = self.database_service.get_employees_by_sheet_as_objects(sheet_name)
 
             if not sheet_emps:
                 return []
@@ -154,6 +163,11 @@ class OCRValidationService:
                     scored.append({"employee": emp, "score": combined})
 
             scored.sort(key=lambda x: x["score"], reverse=True)
+            logging.info(
+                f"MATCH_SEARCH: find_possible_matches ocr_id='{ocr_id}' "
+                f"ocr_name='{ocr_name}' sheet='{sheet_name}' "
+                f"db_matches={len(sheet_emps)} returned={len(scored)} displayed={min(len(scored), limit)}"
+            )
             return scored[:limit]
 
         except Exception as e:
@@ -162,16 +176,33 @@ class OCRValidationService:
 
     def manual_correction(self, result: OCRValidationResult,
                           corrected_id: str = None,
-                          selected_employee: Employee = None) -> OCRValidationResult:
+                          selected_employee: Employee = None,
+                          sheet_name: Optional[str] = None) -> OCRValidationResult:
         if corrected_id:
             corrected_item = {'id': corrected_id, 'name': result.ocr_name}
-            corrected_result = self._validate_single_result(corrected_item)
+            corrected_result = self._validate_single_result(corrected_item, sheet_name=sheet_name)
             corrected_result.manually_corrected = True
             corrected_result.original_ocr_id = result.original_ocr_id
             corrected_result.original_ocr_name = result.original_ocr_name
+            logging.info(
+                f"SHEET_SCOPED: manual_correction corrected_id='{corrected_id}' "
+                f"sheet='{sheet_name}' matched={corrected_result.matched_employee is not None}"
+            )
             return corrected_result
 
         elif selected_employee:
+            if sheet_name and selected_employee.sheet_name != sheet_name:
+                logging.error(
+                    f"SHEET_SCOPED: REJECTED cross-sheet correction "
+                    f"employee={selected_employee.employee_id} "
+                    f"emp_sheet='{selected_employee.sheet_name}' "
+                    f"active_sheet='{sheet_name}'"
+                )
+                raise ValueError(
+                    f"Cannot match employee {selected_employee.employee_id} "
+                    f"from sheet '{selected_employee.sheet_name}' "
+                    f"to active sheet '{sheet_name}'."
+                )
             result.matched_employee = selected_employee
             result.status = OCRStatus.CONFIRMED
             result.validation_notes = "Manually matched employee"
@@ -182,12 +213,61 @@ class OCRValidationService:
 
         return result
 
-    def search_employees_for_manual_match(self, query: str, sheet_name: Optional[str] = None, limit: int = 10) -> List[Employee]:
+    def _score_employees(self, query: str, employees: List[Employee]) -> List[Dict]:
+        q = query.strip().upper()
+        if not q:
+            return [{"employee": e, "score": 0} for e in employees]
+
+        scored = []
+        for emp in employees:
+            eid = emp.employee_id.upper()
+            name = emp.name.upper()
+
+            if eid == q:
+                score = 100
+            elif name == q:
+                score = 95
+            elif eid.startswith(q):
+                score = 90
+            elif name.startswith(q):
+                score = 85
+            elif q in eid:
+                score = 80
+            elif q in name:
+                score = 75
+            else:
+                id_ratio = fuzz.ratio(eid, q)
+                name_ratio = fuzz.partial_ratio(name, q)
+                score = max(id_ratio, name_ratio)
+                if score < 40:
+                    continue
+
+            scored.append({"employee": emp, "score": score})
+
+        return scored
+
+    def search_employees_for_manual_match(self, query: str, sheet_name: Optional[str] = None, limit: int = 100) -> List[Employee]:
         try:
-            results = self.database_service.search_employees_as_objects(query, limit * 3)
             if sheet_name:
-                results = [e for e in results if e.sheet_name == sheet_name]
-            return results[:limit]
+                raw = self.database_service.get_employees_by_sheet_as_objects(sheet_name)
+                logging.info(
+                    f"SHEET_SCOPED: search_employees_for_manual_match "
+                    f"query='{query}' active_sheet='{sheet_name}' "
+                    f"sheet_employees={len(raw)}"
+                )
+            else:
+                raw = self.database_service.search_employees_as_objects(query, 500)
+
+            scored = self._score_employees(query, raw)
+            scored.sort(key=lambda x: x["score"], reverse=True)
+            top = [s["employee"] for s in scored[:limit]]
+
+            logging.info(
+                f"MATCH_SEARCH: search_employees_for_manual_match "
+                f"query='{query}' sheet='{sheet_name}' "
+                f"db_matches={len(raw)} scored={len(scored)} displayed={len(top)}"
+            )
+            return top
         except Exception as e:
             logging.error(f"Employee search failed for query '{query}': {e}")
             return []

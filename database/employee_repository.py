@@ -238,20 +238,31 @@ class EmployeeRepository:
         finally:
             conn.close()
     
-    def search_employees(self, query: str, limit: int = 50) -> List[Dict]:
-        """Search employees by name or ID."""
+    def search_employees(self, query: str, limit: int = 50, sheet_name: Optional[str] = None) -> List[Dict]:
+        """Search employees by name or ID, optionally filtered by sheet."""
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             
-            cursor.execute("""
-                SELECT emp_id, emp_name, rank, sheet_name, row_number,
-                       created_at, updated_at, synced_from_excel
-                FROM employees 
-                WHERE emp_id LIKE ? OR emp_name LIKE ?
-                ORDER BY emp_name
-                LIMIT ?
-            """, (f"%{query}%", f"%{query}%", limit))
+            if sheet_name:
+                cursor.execute("""
+                    SELECT emp_id, emp_name, rank, sheet_name, row_number,
+                           created_at, updated_at, synced_from_excel
+                    FROM employees 
+                    WHERE (emp_id LIKE ? OR emp_name LIKE ?)
+                      AND sheet_name = ?
+                    ORDER BY emp_name
+                    LIMIT ?
+                """, (f"%{query}%", f"%{query}%", sheet_name, limit))
+            else:
+                cursor.execute("""
+                    SELECT emp_id, emp_name, rank, sheet_name, row_number,
+                           created_at, updated_at, synced_from_excel
+                    FROM employees 
+                    WHERE emp_id LIKE ? OR emp_name LIKE ?
+                    ORDER BY emp_name
+                    LIMIT ?
+                """, (f"%{query}%", f"%{query}%", limit))
             
             results = []
             for row in cursor.fetchall():
