@@ -1,23 +1,16 @@
-"""
-OCR Attendance Tab UI
-Comprehensive UI for OCR attendance workflow with verification table and batch processing.
-"""
 import os
 import logging
 from typing import List, Optional, Dict
 from pathlib import Path
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QProgressBar, QTextEdit, QComboBox, QCheckBox, QGroupBox,
-    QFileDialog, QMessageBox, QSplitter, QFrame, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+    QProgressBar, QTextEdit, QComboBox, QGroupBox,
+    QFileDialog, QMessageBox, QFrame, QLineEdit,
     QDialog, QDialogButtonBox, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QFont
 
 from services.ocr.ocr_service import OCRService, OCRServiceException
 from services.ocr.validation_service import OCRValidationService, OCRValidationResult, OCRStatus
@@ -29,36 +22,33 @@ from ui.api_key_dialog import FirstLaunchManager
 
 
 class OCRProcessingThread(QThread):
-    """Thread for handling OCR processing without blocking UI."""
-    
-    progress_updated = Signal(int, str)  # progress percentage, status message
-    ocr_completed = Signal(list, list)   # validation_results, raw_responses
-    error_occurred = Signal(str)         # error message
-    
-    def __init__(self, image_paths: List[str], ocr_service: OCRService, 
-                 validation_service: OCRValidationService):
+    progress_updated = Signal(int, str)
+    ocr_completed = Signal(list, list)
+    error_occurred = Signal(str)
+
+    def __init__(self, image_paths: List[str], ocr_service: OCRService,
+                 validation_service: OCRValidationService, sheet_name: Optional[str] = None):
         super().__init__()
         self.image_paths = image_paths
         self.ocr_service = ocr_service
         self.validation_service = validation_service
-    
+        self.sheet_name = sheet_name
+
     def run(self):
-        """Run OCR processing in background thread."""
         try:
             total_images = len(self.image_paths)
-            
-            # Step 1: OCR Extraction
+
             self.progress_updated.emit(10, "Starting OCR extraction...")
-            
+
             all_extracted_data = []
             all_raw_responses = []
-            
+
             for i, image_path in enumerate(self.image_paths):
                 self.progress_updated.emit(
                     10 + (40 * (i + 1) // total_images),
                     f"Processing image {i + 1}/{total_images}: {Path(image_path).name}"
                 )
-                
+
                 try:
                     extracted_data, raw_response = self.ocr_service.extract_attendance_from_image(image_path)
                     all_extracted_data.extend(extracted_data)
@@ -66,37 +56,36 @@ class OCRProcessingThread(QThread):
                 except Exception as e:
                     logging.error(f"OCR failed for {image_path}: {e}")
                     all_raw_responses.append(f"Error processing {image_path}: {e}")
-            
-            # Step 2: Validation and Matching
+
             self.progress_updated.emit(60, "Validating and matching employees...")
-            
-            validation_results = self.validation_service.validate_ocr_results(all_extracted_data)
-            
+
+            validation_results = self.validation_service.validate_ocr_results(
+                all_extracted_data, sheet_name=self.sheet_name
+            )
+
             self.progress_updated.emit(100, "OCR processing completed!")
             self.ocr_completed.emit(validation_results, all_raw_responses)
-            
+
         except Exception as e:
             logging.error(f"OCR processing thread failed: {e}")
             self.error_occurred.emit(str(e))
 
 
 class EmployeeSearchDialog(QDialog):
-    """Dialog for searching and selecting employees during manual correction."""
-    
-    def __init__(self, validation_service: OCRValidationService, parent=None):
+    def __init__(self, validation_service: OCRValidationService, sheet_name: Optional[str] = None, parent=None):
         super().__init__(parent)
         self.validation_service = validation_service
+        self.sheet_name = sheet_name
         self.selected_employee = None
         self.setup_ui()
-    
+
     def setup_ui(self):
         self.setWindowTitle("Search Employee")
         self.setModal(True)
         self.resize(500, 400)
-        
+
         layout = QVBoxLayout()
-        
-        # Search input
+
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Search:"))
         self.search_input = QLineEdit()
@@ -104,41 +93,39 @@ class EmployeeSearchDialog(QDialog):
         self.search_input.textChanged.connect(self.perform_search)
         search_layout.addWidget(self.search_input)
         layout.addLayout(search_layout)
-        
-        # Results list
+
         self.results_list = QListWidget()
         self.results_list.itemDoubleClicked.connect(self.select_employee)
         layout.addWidget(self.results_list)
-        
-        # Buttons
+
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.select_employee)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
-        
+
         self.setLayout(layout)
-    
+
     def perform_search(self, query: str):
-        """Perform employee search and update results."""
         self.results_list.clear()
-        
+
         if len(query) < 2:
             return
-        
+
         try:
-            employees = self.validation_service.search_employees_for_manual_match(query, 20)
-            
+            employees = self.validation_service.search_employees_for_manual_match(
+                query, sheet_name=self.sheet_name, limit=20
+            )
+
             for emp in employees:
                 item_text = f"{emp.employee_id} - {emp.name} ({emp.rank}) [{emp.sheet_name}]"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, emp)
                 self.results_list.addItem(item)
-                
+
         except Exception as e:
             logging.error(f"Employee search failed: {e}")
-    
+
     def select_employee(self):
-        """Select the highlighted employee and close dialog."""
         current_item = self.results_list.currentItem()
         if current_item:
             self.selected_employee = current_item.data(Qt.UserRole)
@@ -147,229 +134,425 @@ class EmployeeSearchDialog(QDialog):
             QMessageBox.warning(self, "No Selection", "Please select an employee from the list.")
 
 
+class VerificationWizard(QDialog):
+    def __init__(self, validation_results: List[OCRValidationResult],
+                 validation_service: OCRValidationService,
+                 sheet_name: str, parent=None):
+        super().__init__(parent)
+        self.all_results = validation_results
+        self.validation_service = validation_service
+        self.sheet_name = sheet_name
+
+        self.problem_rows = [
+            r for r in self.all_results
+            if r.status in (OCRStatus.UNMATCHED, OCRStatus.UNREADABLE)
+        ]
+        self.current_index = 0
+        self.suggested_matches: List[Dict] = []
+
+        self.setup_ui()
+        self.show_current_record()
+
+    def setup_ui(self):
+        self.setWindowTitle("Verification Wizard")
+        self.setModal(True)
+        self.resize(600, 450)
+
+        layout = QVBoxLayout()
+
+        self.progress_label = QLabel()
+        self.progress_label.setFont(QFont("", 10, QFont.Bold))
+        layout.addWidget(self.progress_label)
+
+        card = QFrame()
+        card.setFrameStyle(QFrame.Box | QFrame.Raised)
+        card.setStyleSheet("QFrame { background-color: #f8f8f8; padding: 16px; }")
+        card_layout = QVBoxLayout(card)
+
+        self.ocr_id_label = QLabel()
+        self.ocr_id_label.setFont(QFont("Courier", 20, QFont.Bold))
+        self.ocr_id_label.setStyleSheet("color: #333;")
+        card_layout.addWidget(self.ocr_id_label)
+
+        self.ocr_name_label = QLabel()
+        self.ocr_name_label.setFont(QFont("", 14))
+        self.ocr_name_label.setStyleSheet("color: #555;")
+        card_layout.addWidget(self.ocr_name_label)
+
+        self.notes_label = QLabel()
+        self.notes_label.setStyleSheet("color: #888; margin-top: 8px;")
+        card_layout.addWidget(self.notes_label)
+
+        layout.addWidget(card)
+
+        self.match_group = QGroupBox("Suggested Matches")
+        match_layout = QVBoxLayout()
+
+        self.match_list = QListWidget()
+        self.match_list.itemDoubleClicked.connect(self.accept_match)
+        match_layout.addWidget(self.match_list)
+
+        self.no_match_label = QLabel("No possible matches found in this sheet.")
+        self.no_match_label.setStyleSheet("color: #999; padding: 8px;")
+        self.no_match_label.setVisible(False)
+        match_layout.addWidget(self.no_match_label)
+
+        self.match_group.setLayout(match_layout)
+        layout.addWidget(self.match_group)
+
+        btn_layout = QHBoxLayout()
+
+        self.accept_btn = QPushButton("Accept Match")
+        self.accept_btn.clicked.connect(self.accept_match)
+        self.accept_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 16px;")
+        btn_layout.addWidget(self.accept_btn)
+
+        self.change_btn = QPushButton("Change Match")
+        self.change_btn.clicked.connect(self.change_match)
+        self.change_btn.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold; padding: 8px 16px;")
+        btn_layout.addWidget(self.change_btn)
+
+        self.skip_btn = QPushButton("Skip")
+        self.skip_btn.clicked.connect(self.skip_record)
+        self.skip_btn.setStyleSheet("background-color: #9E9E9E; color: white; font-weight: bold; padding: 8px 16px;")
+        btn_layout.addWidget(self.skip_btn)
+
+        layout.addLayout(btn_layout)
+
+        self.setLayout(layout)
+
+    def show_current_record(self):
+        remaining = len(self.problem_rows) - self.current_index
+        total = len(self.problem_rows)
+        self.progress_label.setText(f"Records needing review: {remaining} remaining out of {total}")
+
+        if self.current_index >= len(self.problem_rows):
+            self.accept()
+            return
+
+        result = self.problem_rows[self.current_index]
+
+        self.ocr_id_label.setText(result.ocr_id)
+        self.ocr_name_label.setText(result.ocr_name or "(no name detected)")
+        self.notes_label.setText(result.validation_notes)
+
+        self.match_list.clear()
+        self.no_match_label.setVisible(False)
+
+        if result.status == OCRStatus.UNMATCHED:
+            self.match_group.setVisible(True)
+            self.suggested_matches = self.validation_service.find_possible_matches(
+                result.ocr_id, result.ocr_name, self.sheet_name, limit=5
+            )
+
+            if self.suggested_matches:
+                self.match_list.setVisible(True)
+                self.no_match_label.setVisible(False)
+                self.accept_btn.setEnabled(True)
+                for m in self.suggested_matches:
+                    emp = m["employee"]
+                    score = m["score"]
+                    text = f"{emp.employee_id} - {emp.name} ({emp.rank})  [{score:.0f}% match]"
+                    item = QListWidgetItem(text)
+                    item.setData(Qt.UserRole, emp)
+                    self.match_list.addItem(item)
+                self.match_list.setCurrentRow(0)
+            else:
+                self.match_list.setVisible(False)
+                self.no_match_label.setVisible(True)
+                self.accept_btn.setEnabled(False)
+        else:
+            self.match_group.setVisible(False)
+            self.accept_btn.setEnabled(False)
+
+    def accept_match(self):
+        result = self.problem_rows[self.current_index]
+
+        if self.suggested_matches and self.match_list.currentItem():
+            emp = self.match_list.currentItem().data(Qt.UserRole)
+            self.validation_service.manual_correction(result, selected_employee=emp)
+
+        self.current_index += 1
+        self.show_current_record()
+
+    def change_match(self):
+        result = self.problem_rows[self.current_index]
+
+        dialog = EmployeeSearchDialog(self.validation_service, sheet_name=self.sheet_name, parent=self)
+        if dialog.exec() == QDialog.Accepted and dialog.selected_employee:
+            self.validation_service.manual_correction(result, selected_employee=dialog.selected_employee)
+            self.current_index += 1
+            self.show_current_record()
+
+    def skip_record(self):
+        result = self.problem_rows[self.current_index]
+        result.is_checked = False
+        result.checkbox_enabled = False
+        self.current_index += 1
+        self.show_current_record()
+
+    def get_results(self) -> List[OCRValidationResult]:
+        return self.all_results
+
+
+class VerificationSummaryDialog(QDialog):
+    def __init__(self, workbook_name: str, sheet_name: str, images_count: int,
+                 total: int, confirmed: int, corrected: int, skipped: int,
+                 shift: str, rows_to_mark: int, parent=None):
+        super().__init__(parent)
+        self.rows_to_mark = rows_to_mark
+        self.setup_ui(workbook_name, sheet_name, images_count, total, confirmed, corrected, skipped, shift)
+
+    def setup_ui(self, workbook_name, sheet_name, images_count, total, confirmed, corrected, skipped, shift):
+        self.setWindowTitle("Verification Summary")
+        self.setModal(True)
+        self.resize(450, 350)
+
+        layout = QVBoxLayout()
+
+        lines = [
+            f"Workbook:  {workbook_name}",
+            f"Target Sheet:  {sheet_name}",
+            "",
+            f"Images Processed:  {images_count}",
+            f"Total OCR Records:  {total}",
+            "",
+            f"Confirmed:  {confirmed}",
+            f"Corrected:  {corrected}",
+            f"Skipped:  {skipped}",
+            "",
+            f"Shift:  {shift}",
+            f"Rows To Mark:  {rows_to_mark}",
+        ]
+
+        for line in lines:
+            if line == "":
+                layout.addSpacing(4)
+            else:
+                label = QLabel(line)
+                if line.startswith("Rows To Mark") or line.startswith("Shift"):
+                    label.setFont(QFont("", 11, QFont.Bold))
+                layout.addWidget(label)
+
+        layout.addStretch()
+
+        btn_layout = QHBoxLayout()
+        self.proceed_btn = QPushButton("Proceed to Commit")
+        self.proceed_btn.clicked.connect(self.accept)
+        self.proceed_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 20px;")
+        btn_layout.addWidget(self.proceed_btn)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+
+        layout.addLayout(btn_layout)
+
+        self.setLayout(layout)
+
+
+class PostCommitSummaryDialog(QDialog):
+    def __init__(self, written: int, overwrites: int, skipped: int, errors: int, parent=None):
+        super().__init__(parent)
+        self.setup_ui(written, overwrites, skipped, errors)
+
+    def setup_ui(self, written, overwrites, skipped, errors):
+        self.setWindowTitle("Commit Results")
+        self.setModal(True)
+        self.resize(400, 280)
+
+        layout = QVBoxLayout()
+
+        lines = [
+            ("Records Written:", str(written), False),
+            ("Overwrites:", str(overwrites), False),
+            ("Skipped:", str(skipped), False),
+            ("Errors:", str(errors), errors > 0),
+        ]
+
+        header = QLabel("Workbook Saved Successfully" if errors == 0 else "Commit Completed with Errors")
+        header.setFont(QFont("", 14, QFont.Bold))
+        header.setStyleSheet("color: #4CAF50;" if errors == 0 else "color: #FF9800;")
+        layout.addWidget(header)
+        layout.addSpacing(12)
+
+        for label_text, value, is_error in lines:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label_text))
+            val = QLabel(value)
+            val.setFont(QFont("", 12, QFont.Bold))
+            if is_error:
+                val.setStyleSheet("color: red;")
+            else:
+                val.setStyleSheet("color: #333;")
+            row.addWidget(val)
+            row.addStretch()
+            layout.addLayout(row)
+
+        layout.addStretch()
+
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self.accept)
+        ok_btn.setStyleSheet("padding: 8px 32px;")
+        layout.addWidget(ok_btn, alignment=Qt.AlignCenter)
+
+        self.setLayout(layout)
+
+
 class OCRAttendanceTab(QWidget):
-    """Main OCR Attendance tab widget."""
-    
-    def __init__(self, database_service: DatabaseService, attendance_service: AttendanceService):
+    def __init__(self, database_service: DatabaseService, attendance_service: AttendanceService,
+                 main_window=None):
         super().__init__()
         self.database_service = database_service
         self.attendance_service = attendance_service
-        
-        # Initialize services
+        self.main_window = main_window
+
         self.ocr_service = None
         self.validation_service = OCRValidationService(database_service)
-        
-        # Data
+
         self.validation_results: List[OCRValidationResult] = []
         self.current_images: List[str] = []
         self.ocr_enabled = False
-        
-        # UI setup
+
         self.setup_ui()
         self.setup_connections()
-        
-        # Initialize OCR service (uses config)
         self.initialize_ocr_service()
-    
+
     def setup_ui(self):
-        """Setup the complete UI layout."""
         main_layout = QVBoxLayout()
-        
-        # Header section
+
         header_group = QGroupBox("OCR Attendance Processing")
         header_layout = QVBoxLayout()
-        
-        # Status and statistics
+
         stats_layout = QHBoxLayout()
         self.stats_label = QLabel("Ready to process images")
         self.stats_label.setFont(QFont("", 10, QFont.Bold))
         stats_layout.addWidget(self.stats_label)
         stats_layout.addStretch()
-        
-        # API status
+
         self.api_status_label = QLabel("Gemini API: Not initialized")
         stats_layout.addWidget(self.api_status_label)
         header_layout.addLayout(stats_layout)
-        
-        # Progress bar
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         header_layout.addWidget(self.progress_bar)
-        
-        # Status message
+
         self.status_label = QLabel("")
         self.status_label.setVisible(False)
         header_layout.addWidget(self.status_label)
-        
+
+        active_sheet = self.main_window.active_sheet_name if self.main_window else "(none)"
+        self.active_sheet_label = QLabel(f"Active Sheet: {active_sheet}")
+        self.active_sheet_label.setStyleSheet("color: #555; font-weight: bold;")
+        header_layout.addWidget(self.active_sheet_label)
+
         header_group.setLayout(header_layout)
         main_layout.addWidget(header_group)
-        
-        # Upload section
-        upload_group = QGroupBox("Image Upload")
+
+        upload_group = QGroupBox("Step 1: Upload Images")
         upload_layout = QHBoxLayout()
-        
-        self.browse_button = QPushButton("Browse Images...")
+
+        self.browse_button = QPushButton("Add Images")
         self.browse_button.clicked.connect(self.browse_images)
         upload_layout.addWidget(self.browse_button)
-        
-        self.process_button = QPushButton("Process Images")
-        self.process_button.clicked.connect(self.process_images)
-        self.process_button.setEnabled(False)
-        upload_layout.addWidget(self.process_button)
-        
+
         upload_layout.addStretch()
-        
+
         self.clear_button = QPushButton("Clear All")
         self.clear_button.clicked.connect(self.clear_all)
         upload_layout.addWidget(self.clear_button)
-        
+
         upload_group.setLayout(upload_layout)
         main_layout.addWidget(upload_group)
-        
-        # Selected files display
+
         self.files_label = QLabel("No images selected")
         main_layout.addWidget(self.files_label)
-        
-        # Batch info section (Date + Shift selectors)
-        batch_group = QGroupBox("Batch Info")
-        batch_layout = QHBoxLayout()
-        
-        batch_layout.addWidget(QLabel("Date:"))
+
+        process_group = QGroupBox("Step 2: OCR Processing")
+        process_layout = QHBoxLayout()
+
+        self.process_button = QPushButton("Process Images")
+        self.process_button.clicked.connect(self.process_images)
+        self.process_button.setEnabled(False)
+        process_layout.addWidget(self.process_button)
+
+        process_layout.addStretch()
+        process_group.setLayout(process_layout)
+        main_layout.addWidget(process_group)
+
+        verify_group = QGroupBox("Step 3: Verification")
+        verify_layout = QHBoxLayout()
+
+        self.verify_button = QPushButton("Start Verification")
+        self.verify_button.clicked.connect(self.start_verification)
+        self.verify_button.setEnabled(False)
+        self.verify_button.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 8px 20px;")
+        verify_layout.addWidget(self.verify_button)
+
+        verify_layout.addStretch()
+        self.verify_status_label = QLabel("Process images to begin verification")
+        verify_layout.addWidget(self.verify_status_label)
+
+        verify_group.setLayout(verify_layout)
+        main_layout.addWidget(verify_group)
+
+        commit_group = QGroupBox("Step 4: Commit to Workbook")
+        commit_layout = QHBoxLayout()
+
+        commit_layout.addWidget(QLabel("Date:"))
         self.date_combo = QComboBox()
-        # Days 1-31
         self.date_combo.addItems([str(d) for d in range(1, 32)])
-        # Default to current day or 15
         from datetime import datetime
         current_day = datetime.now().day
         if current_day <= 31:
             self.date_combo.setCurrentText(str(current_day))
         else:
             self.date_combo.setCurrentText("15")
-        batch_layout.addWidget(self.date_combo)
-        
-        batch_layout.addWidget(QLabel("Shift:"))
-        self.batch_shift_combo = QComboBox()
-        self.batch_shift_combo.addItems(["", "A", "B", "C", "G", "WO", "AB"])
-        self.batch_shift_combo.setCurrentText("A")
-        self.batch_shift_combo.setMinimumWidth(100)
-        batch_layout.addWidget(self.batch_shift_combo)
-        
-        batch_layout.addStretch()
-        
-        # Summary label
-        self.batch_summary_label = QLabel("Shift: A | Rows: 0")
-        self.batch_summary_label.setStyleSheet("font-weight: bold; color: #333; padding: 5px;")
-        batch_layout.addWidget(self.batch_summary_label)
-        
-        batch_group.setLayout(batch_layout)
-        main_layout.addWidget(batch_group)
-        
-        # Upload section
-        upload_group = QGroupBox("Image Upload")
-        upload_layout = QHBoxLayout()
-        
-        self.browse_button = QPushButton("Browse Images...")
-        self.browse_button.clicked.connect(self.browse_images)
-        upload_layout.addWidget(self.browse_button)
-        
-        self.process_button = QPushButton("Process Images")
-        self.process_button.clicked.connect(self.process_images)
-        self.process_button.setEnabled(False)
-        upload_layout.addWidget(self.process_button)
-        
-        upload_layout.addStretch()
-        
-        self.clear_button = QPushButton("Clear All")
-        self.clear_button.clicked.connect(self.clear_all)
-        upload_layout.addWidget(self.clear_button)
-        
-        upload_group.setLayout(upload_layout)
-        main_layout.addWidget(upload_group)
-        
-        # Selected files display
-        self.files_label = QLabel("No images selected")
-        main_layout.addWidget(self.files_label)
-        
-        # Main content splitter
-        splitter = QSplitter(Qt.Vertical)
-        
-        # Verification table
-        self.setup_verification_table()
-        splitter.addWidget(self.verification_table)
-        
-        # Debug/raw response area
-        debug_group = QGroupBox("Debug Information")
-        debug_layout = QVBoxLayout()
-        
-        self.raw_response_text = QTextEdit()
-        self.raw_response_text.setMaximumHeight(150)
-        self.raw_response_text.setReadOnly(True)
-        debug_layout.addWidget(self.raw_response_text)
-        
-        debug_group.setLayout(debug_layout)
-        splitter.addWidget(debug_group)
-        
-        splitter.setSizes([400, 150])
-        main_layout.addWidget(splitter)
-        
-        # Commit section
-        commit_group = QGroupBox("Batch Commit")
-        commit_layout = QHBoxLayout()
-        
-        self.commit_stats_label = QLabel("No rows ready for commit")
-        commit_layout.addWidget(self.commit_stats_label)
+        commit_layout.addWidget(self.date_combo)
+
+        commit_layout.addWidget(QLabel("Shift:"))
+        self.shift_combo = QComboBox()
+        self.shift_combo.addItems(["", "A", "B", "C", "G", "WO", "AB"])
+        self.shift_combo.setCurrentText("A")
+        self.shift_combo.setMinimumWidth(80)
+        commit_layout.addWidget(self.shift_combo)
+
         commit_layout.addStretch()
-        
-        self.commit_button = QPushButton("Commit to Excel")
-        self.commit_button.clicked.connect(self.commit_to_excel)
-        self.commit_button.setEnabled(False)
-        self.commit_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
-        commit_layout.addWidget(self.commit_button)
-        
+
+        self.save_button = QPushButton("Save To Workbook")
+        self.save_button.clicked.connect(self.commit_to_excel)
+        self.save_button.setEnabled(False)
+        self.save_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 20px;")
+        commit_layout.addWidget(self.save_button)
+
         commit_group.setLayout(commit_layout)
         main_layout.addWidget(commit_group)
-        
+
+        debug_group = QGroupBox("Raw OCR Output (Advanced)")
+        debug_layout = QVBoxLayout()
+
+        self.raw_response_text = QTextEdit()
+        self.raw_response_text.setMaximumHeight(120)
+        self.raw_response_text.setReadOnly(True)
+        debug_layout.addWidget(self.raw_response_text)
+
+        debug_group.setLayout(debug_layout)
+        main_layout.addWidget(debug_group)
+
         self.setLayout(main_layout)
-    
-    def setup_verification_table(self):
-        """Setup the verification table with all required columns (no per-row shift)."""
-        self.verification_table = QTableWidget()
-        
-        # Column setup: [✓], Status, OCR ID, OCR Name, Matched Employee, Notes, Actions
-        column_headers = ["✓", "Status", "OCR ID", "OCR Name", "Matched Employee", "Notes", "Actions"]
-        self.verification_table.setColumnCount(len(column_headers))
-        self.verification_table.setHorizontalHeaderLabels(column_headers)
-        
-        # Configure table
-        header = self.verification_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Checkbox
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Status
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # OCR ID
-        header.setSectionResizeMode(3, QHeaderView.Stretch)           # OCR Name
-        header.setSectionResizeMode(4, QHeaderView.Stretch)           # Matched Employee
-        header.setSectionResizeMode(5, QHeaderView.Stretch)           # Notes
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Actions
-        
-        self.verification_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.verification_table.setAlternatingRowColors(True)
-    
+
     def setup_connections(self):
-        """Setup signal connections."""
-        # Timer for updating commit stats
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_commit_stats)
-        self.update_timer.start(1000)  # Update every second
-    
+        self.shift_combo.currentTextChanged.connect(self.update_commit_readiness)
+
     def initialize_ocr_service(self):
-        """Initialize the OCR service using config.json."""
-        # Startup diagnostics
         has_key = config.has_valid_api_key()
         logging.info(f"=== OCR Startup Diagnostics ===")
         logging.info(f"Config file found: True")
         logging.info(f"API key configured: {config.has_valid_api_key()}")
         logging.info(f"OCR enabled: {config.has_valid_api_key()}")
         logging.info(f"==================================")
-        
+
         if config.has_valid_api_key():
             try:
                 self.ocr_service = OCRService(config.get_gemini_api_key())
@@ -384,32 +567,28 @@ class OCRAttendanceTab(QWidget):
                 self.api_status_label.setStyleSheet("color: red;")
                 self._enable_ocr_controls(False)
         else:
-            # No API key configured - show disabled state with configure button
             self.ocr_enabled = False
             self.api_status_label.setText("Gemini API: Not Configured")
             self.api_status_label.setStyleSheet("color: orange;")
             self._enable_ocr_controls(False)
             self._add_configure_button()
             logging.info("OCR disabled: No API key configured")
-    
+
     def _enable_ocr_controls(self, enabled: bool):
-        """Enable or disable OCR-related controls."""
         self.ocr_enabled = enabled
-        self.process_button.setEnabled(enabled)
+        self.process_button.setEnabled(enabled and len(self.current_images) > 0)
         self.browse_button.setEnabled(enabled)
         if hasattr(self, 'configure_btn') and self.configure_btn:
             self.configure_btn.setVisible(not enabled)
-    
+
     def _add_configure_button(self):
-        """Add a 'Configure API Key' button to the header."""
         if hasattr(self, 'configure_btn') and self.configure_btn:
-            return  # Already added
-        
+            return
+
         self.configure_btn = QPushButton("Configure Gemini API Key")
         self.configure_btn.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold; padding: 8px 16px;")
         self.configure_btn.clicked.connect(self._configure_api_key)
-        
-        # Add to header group's stats layout
+
         for child in self.children():
             if isinstance(child, QGroupBox) and child.title() == "OCR Attendance Processing":
                 layout = child.layout()
@@ -418,352 +597,319 @@ class OCRAttendanceTab(QWidget):
                     if stats_layout:
                         stats_layout.addWidget(self.configure_btn)
                         break
-    
+
     def _configure_api_key(self):
-        """Open API key configuration dialog."""
         from ui.api_key_dialog import FirstLaunchManager
         manager = FirstLaunchManager(self)
         if manager.show_reconfigure_dialog():
-            # Key was saved, reinitialize
             self.initialize_ocr_service()
-    
+
     def browse_images(self):
-        """Open file dialog to select images."""
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Select Attendance Images",
             "",
             "Image Files (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"
         )
-        
+
         if file_paths:
             self.current_images = file_paths
             self.update_files_display()
-            self.process_button.setEnabled(True)
-    
+            self.process_button.setEnabled(self.ocr_enabled)
+
     def update_files_display(self):
-        """Update the display of selected files."""
         if not self.current_images:
             self.files_label.setText("No images selected")
             return
-        
+
         if len(self.current_images) == 1:
             filename = Path(self.current_images[0]).name
             self.files_label.setText(f"Selected: {filename}")
         else:
             filenames = [Path(path).name for path in self.current_images]
-            self.files_label.setText(f"Selected {len(self.current_images)} files: " + 
-                                   ", ".join(filenames[:3]) + 
+            self.files_label.setText(f"Selected {len(self.current_images)} files: " +
+                                   ", ".join(filenames[:3]) +
                                    ("..." if len(filenames) > 3 else ""))
-    
+
     def process_images(self):
-        """Start OCR processing of selected images."""
         if not self.current_images:
             QMessageBox.warning(self, "No Images", "Please select images to process.")
             return
-        
+
         if not self.ocr_enabled or not self.ocr_service:
-            QMessageBox.warning(self, "OCR Not Configured", 
+            QMessageBox.warning(self, "OCR Not Configured",
                               "Please configure your Gemini API key first using the 'Configure Gemini API Key' button.")
             return
-        
-        # Clear previous results
+
+        active_sheet = self.main_window.active_sheet_name if self.main_window else None
+        if not active_sheet:
+            QMessageBox.warning(self, "No Active Sheet",
+                              "Please select an active sheet in the main window before processing.")
+            return
+
         self.validation_results.clear()
-        self.verification_table.setRowCount(0)
         self.raw_response_text.clear()
-        
-        # Show progress UI
+
         self.progress_bar.setVisible(True)
         self.status_label.setVisible(True)
         self.progress_bar.setValue(0)
-        
-        # Disable UI during processing
+
         self.process_button.setEnabled(False)
         self.browse_button.setEnabled(False)
-        
-        # Start OCR processing thread
+
         self.ocr_thread = OCRProcessingThread(
-            self.current_images, 
-            self.ocr_service, 
-            self.validation_service
+            self.current_images,
+            self.ocr_service,
+            self.validation_service,
+            sheet_name=active_sheet
         )
         self.ocr_thread.progress_updated.connect(self.update_progress)
         self.ocr_thread.ocr_completed.connect(self.handle_ocr_completed)
         self.ocr_thread.error_occurred.connect(self.handle_ocr_error)
         self.ocr_thread.start()
-    
+
     def update_progress(self, percentage: int, message: str):
-        """Update progress bar and status message."""
         self.progress_bar.setValue(percentage)
         self.status_label.setText(message)
-    
-    def handle_ocr_completed(self, validation_results: List[OCRValidationResult], 
+
+    def handle_ocr_completed(self, validation_results: List[OCRValidationResult],
                            raw_responses: List[str]):
-        """Handle completed OCR processing."""
         self.validation_results = validation_results
-        
-        # Update UI
-        self.populate_verification_table()
         self.update_statistics()
-        
-        # Show raw responses in debug area
+
         self.raw_response_text.setText("\n\n".join(raw_responses))
-        
-        # Hide progress UI
+
         self.progress_bar.setVisible(False)
         self.status_label.setVisible(False)
-        
-        # Re-enable UI
+
         self.process_button.setEnabled(True)
         self.browse_button.setEnabled(True)
-    
+
+        self.verify_button.setEnabled(True)
+        self.verify_status_label.setText(f"{len(validation_results)} records extracted. Click to review.")
+
     def handle_ocr_error(self, error_message: str):
-        """Handle OCR processing error."""
-        QMessageBox.critical(self, "OCR Processing Error", 
+        QMessageBox.critical(self, "OCR Processing Error",
                            f"OCR processing failed:\n{error_message}")
-        
-        # Hide progress UI
+
         self.progress_bar.setVisible(False)
         self.status_label.setVisible(False)
-        
-        # Re-enable UI
+
         self.process_button.setEnabled(True)
         self.browse_button.setEnabled(True)
-    
-    def populate_verification_table(self):
-        """Populate verification table with validation results (no per-row shift)."""
-        self.verification_table.setRowCount(len(self.validation_results))
-        
-        for row, result in enumerate(self.validation_results):
-            # Column 0: Checkbox
-            checkbox = QCheckBox()
-            checkbox.setChecked(result.is_checked)
-            checkbox.setEnabled(result.checkbox_enabled)
-            checkbox.stateChanged.connect(lambda state, r=result: setattr(r, 'is_checked', bool(state)))
-            self.verification_table.setCellWidget(row, 0, checkbox)
-            
-            # Column 1: Status with color coding
-            status_item = QTableWidgetItem(result.status.value)
-            if result.status == OCRStatus.CONFIRMED:
-                status_item.setBackground(QColor(200, 255, 200))  # Light green
-            elif result.status == OCRStatus.UNMATCHED:
-                status_item.setBackground(QColor(255, 255, 200))  # Light yellow
-            elif result.status == OCRStatus.INVALID:
-                status_item.setBackground(QColor(255, 200, 200))  # Light red
-            elif result.status == OCRStatus.REVIEW:
-                status_item.setBackground(QColor(255, 220, 150))  # Light orange
-            self.verification_table.setItem(row, 1, status_item)
-            
-            # Column 2: OCR ID
-            self.verification_table.setItem(row, 2, QTableWidgetItem(result.ocr_id))
-            
-            # Column 3: OCR Name
-            self.verification_table.setItem(row, 3, QTableWidgetItem(result.ocr_name))
-            
-            # Column 4: Matched Employee
-            if result.matched_employee:
-                emp_text = f"{result.matched_employee.employee_id} - {result.matched_employee.name}"
-                if result.matched_employee.rank:
-                    emp_text += f" ({result.matched_employee.rank})"
-            else:
-                emp_text = "No match"
-            self.verification_table.setItem(row, 4, QTableWidgetItem(emp_text))
-            
-            # Column 5: Notes
-            self.verification_table.setItem(row, 5, QTableWidgetItem(result.validation_notes))
-            
-            # Column 6: Actions
-            actions_widget = QWidget()
-            actions_layout = QHBoxLayout(actions_widget)
-            actions_layout.setContentsMargins(2, 2, 2, 2)
-            
-            if result.status in [OCRStatus.UNMATCHED, OCRStatus.INVALID, OCRStatus.REVIEW]:
-                correct_button = QPushButton("Correct")
-                correct_button.clicked.connect(lambda _, r=result, row_idx=row: self.correct_entry(r, row_idx))
-                actions_layout.addWidget(correct_button)
-            
-            self.verification_table.setCellWidget(row, 6, actions_widget)
-    
-    def correct_entry(self, result: OCRValidationResult, row_index: int):
-        """Open correction dialog for a validation result."""
-        dialog = EmployeeSearchDialog(self.validation_service, self)
-        
-        if dialog.exec() == QDialog.Accepted and dialog.selected_employee:
-            # Apply manual correction
-            corrected_result = self.validation_service.manual_correction(
-                result, selected_employee=dialog.selected_employee
-            )
-            
-            # Update the result in our list
-            self.validation_results[row_index] = corrected_result
-            
-            # Refresh the table row
-            self.populate_verification_table()
-            
-            QMessageBox.information(self, "Correction Applied", 
-                                  f"Employee {dialog.selected_employee.employee_id} "
-                                  f"has been matched to OCR entry {result.ocr_id}")
-    
-    def update_statistics(self):
-        """Update statistics display."""
+
+    def start_verification(self):
         if not self.validation_results:
-            self.stats_label.setText("No results to display")
             return
-        
+
+        active_sheet = self.main_window.active_sheet_name if self.main_window else ""
+        if not active_sheet:
+            QMessageBox.warning(self, "No Active Sheet",
+                              "Please select an active sheet first.")
+            return
+
+        wizard = VerificationWizard(
+            self.validation_results,
+            self.validation_service,
+            active_sheet,
+            parent=self
+        )
+        wizard.exec()
+
+        self.validation_results = wizard.get_results()
+        self.update_statistics()
+        self.update_commit_readiness()
+
+    def update_statistics(self):
+        if not self.validation_results:
+            self.stats_label.setText("Ready to process images")
+            return
+
         stats = self.validation_service.get_validation_statistics()
-        
+
         self.stats_label.setText(
             f"Total: {stats['total_processed']} | "
             f"Confirmed: {stats['confirmed']} | "
             f"Unmatched: {stats['unmatched']} | "
-            f"Invalid: {stats['invalid']} | "
-            f"Review: {stats['review']}"
+            f"Unreadable: {stats['unreadable']}"
         )
-    
-    def update_commit_stats(self):
-        """Update commit statistics and button state."""
-        if not self.validation_results:
-            self.commit_stats_label.setText("No rows ready for commit")
-            self.commit_button.setEnabled(False)
-            self.update_batch_summary()
+
+    def update_commit_readiness(self):
+        shift = self.shift_combo.currentText()
+        if not shift:
+            self.save_button.setEnabled(False)
+            self.verify_status_label.setText("Select a shift to enable Save To Workbook")
             return
-        
-        # Check global shift
-        global_shift = self.batch_shift_combo.currentText()
-        has_global_shift = bool(global_shift)
-        
-        if not has_global_shift:
-            self.commit_stats_label.setText("Select a shift to enable commit")
-            self.commit_button.setEnabled(False)
-            self.update_batch_summary()
-            return
-        
-        ready_results = self.validation_service.filter_ready_for_commit(self.validation_results)
-        ready_count = len(ready_results)
-        total_checked = sum(1 for r in self.validation_results if r.is_checked)
-        
-        self.commit_stats_label.setText(
-            f"Ready for commit: {ready_count}/{total_checked} checked rows"
-        )
-        
-        self.commit_button.setEnabled(ready_count > 0)
-        self.update_batch_summary()
-    
-    def update_batch_summary(self):
-        """Update the batch summary label with shift and row count."""
-        global_shift = self.batch_shift_combo.currentText()
-        if not self.validation_results:
-            self.batch_summary_label.setText(f"Shift: {global_shift or 'Not Selected'} | Rows: 0")
-            return
-        
-        total_checked = sum(1 for r in self.validation_results if r.is_checked)
-        ready_results = self.validation_service.filter_ready_for_commit(self.validation_results)
-        ready_count = len(ready_results)
-        
-        self.batch_summary_label.setText(
-            f"Shift: {global_shift or 'Not Selected'} | "
-            f"Checked: {total_checked} | Ready: {ready_count}"
-        )
-    
+
+        ready = self.validation_service.filter_ready_for_commit(self.validation_results)
+        if ready:
+            self.save_button.setEnabled(True)
+            self.verify_status_label.setText(f"{len(ready)} records ready to commit")
+        else:
+            self.save_button.setEnabled(False)
+            self.verify_status_label.setText("No confirmed records ready for commit")
+
     def commit_to_excel(self):
-        """Commit validated results to Excel."""
         ready_results, warnings = self.validation_service.validate_commit_readiness(
             self.validation_results
         )
-        
+
         if not ready_results:
-            QMessageBox.warning(self, "Nothing to Commit", 
+            QMessageBox.warning(self, "Nothing to Commit",
                               "No rows are ready for commit.\n\n" +
                               "\n".join(warnings) if warnings else "")
             return
-        
-        # Validate global shift
-        global_shift = self.batch_shift_combo.currentText()
-        if not global_shift:
-            QMessageBox.warning(self, "No Shift Selected", 
-                              "Please select a shift for this batch before committing.")
+
+        shift = self.shift_combo.currentText()
+        if not shift:
+            QMessageBox.warning(self, "No Shift Selected",
+                              "Please select a shift before committing.")
             return
-        
-        # Get selected day
+
         day = int(self.date_combo.currentText())
-        
-        # Show confirmation dialog
-        message = f"Ready to commit {len(ready_results)} attendance entries to Excel.\n\n"
-        message += f"Date: {day} | Shift: {global_shift}\n\n"
-        if warnings:
-            message += "Warnings:\n" + "\n".join(warnings[:5])  # Show first 5 warnings
-            if len(warnings) > 5:
-                message += f"\n... and {len(warnings) - 5} more warnings"
-            message += "\n\n"
-        
-        message += "Continue with commit?"
-        
-        reply = QMessageBox.question(self, "Confirm Commit", message,
-                                   QMessageBox.Yes | QMessageBox.No,
-                                   QMessageBox.No)
-        
+
+        active_sheet = self.main_window.active_sheet_name if self.main_window else ""
+        workbook_name = Path(self.main_window.workbook_path).name if self.main_window else "(unknown)"
+
+        stats = self.validation_service.get_validation_statistics()
+        corrected = sum(1 for r in self.validation_results if r.manually_corrected)
+        skipped = sum(1 for r in self.validation_results if not r.is_checked)
+
+        summary = VerificationSummaryDialog(
+            workbook_name=workbook_name,
+            sheet_name=active_sheet,
+            images_count=len(self.current_images),
+            total=stats['total_processed'],
+            confirmed=stats['confirmed'],
+            corrected=corrected,
+            skipped=skipped,
+            shift=shift,
+            rows_to_mark=len(ready_results),
+            parent=self
+        )
+
+        if summary.exec() != QDialog.Accepted:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Save",
+            f"{len(ready_results)} attendance records will be written to {active_sheet} sheet.\n\n"
+            f"Date: {day} | Shift: {shift}\n\n"
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
         if reply != QMessageBox.Yes:
             return
-        
-        # Perform commit with global shift and day
-        self.perform_batch_commit(ready_results, day, global_shift)
-    
-    def perform_batch_commit(self, ready_results: List[OCRValidationResult], day: int, shift: str):
-        """Perform the actual batch commit to Excel using global shift."""
+
+        self._perform_commit(ready_results, day, shift)
+
+    def _perform_commit(self, ready_results: List[OCRValidationResult], day: int, shift: str):
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setVisible(True)
+        self.status_label.setText("Writing to workbook...")
+
+        self.save_button.setEnabled(False)
+        self.verify_button.setEnabled(False)
+
+        total = len(ready_results)
         success_count = 0
+        overwrite_count = 0
         error_count = 0
-        error_messages = []
-        
-        for result in ready_results:
+
+        active_sheet = self.main_window.active_sheet_name if self.main_window else None
+
+        for i, result in enumerate(ready_results):
             try:
-                # Use existing attendance service to write to Excel
                 old_value = self.attendance_service.mark(
                     result.matched_employee,
                     day,
-                    shift
+                    shift,
+                    active_sheet
                 )
-                
+
+                if old_value is not None and old_value != "":
+                    overwrite_count += 1
+
                 success_count += 1
-                logging.info(f"OCR COMMIT: {result.matched_employee.employee_id} "
-                           f"({result.matched_employee.name}) marked {shift} "
-                           f"(was: {old_value})")
-                
+
+                self.progress_bar.setValue(int((i + 1) / total * 100))
+                self.status_label.setText(f"Writing record {i + 1}/{total}...")
+
             except Exception as e:
                 error_count += 1
-                error_msg = f"Failed to commit {result.ocr_id}: {e}"
-                error_messages.append(error_msg)
-                logging.error(error_msg)
-        
-        # Show results
-        if error_count == 0:
-            QMessageBox.information(self, "Commit Successful", 
-                                  f"Successfully committed {success_count} attendance entries!")
-        else:
-            error_detail = "\n".join(error_messages[:5])  # Show first 5 errors
-            if len(error_messages) > 5:
-                error_detail += f"\n... and {len(error_messages) - 5} more errors"
-            
-            QMessageBox.warning(self, "Commit Completed with Errors",
-                              f"Committed: {success_count}\nErrors: {error_count}\n\n"
-                              f"Error details:\n{error_detail}")
-        
-        # Clear committed results
+                logging.error(f"Failed to commit {result.ocr_id}: {e}")
+
+        self.progress_bar.setVisible(False)
+        self.status_label.setVisible(False)
+
+        self.save_button.setEnabled(True)
+        self.verify_button.setEnabled(True)
+
+        # Auto-save workbook after commit
+        try:
+            if self.main_window:
+                self.attendance_service.save(self.main_window.workbook_path)
+                logging.info(f"OCR COMMIT: Workbook saved to {self.main_window.workbook_path}")
+        except Exception as e:
+            logging.error(f"OCR COMMIT: Failed to save workbook: {e}")
+            QMessageBox.warning(self, "Save Warning",
+                              f"Records were written but workbook could not be auto-saved: {e}")
+
+        skipped = sum(1 for r in self.validation_results if not r.is_checked)
+
+        dialog = PostCommitSummaryDialog(
+            written=success_count,
+            overwrites=overwrite_count,
+            skipped=skipped,
+            errors=error_count,
+            parent=self
+        )
+        dialog.exec()
+
         self.validation_results = [r for r in self.validation_results if r not in ready_results]
-        self.populate_verification_table()
         self.update_statistics()
-    
+        self.update_commit_readiness()
+
+    def refresh_sheet(self):
+        if self.validation_results or self.current_images:
+            reply = QMessageBox.question(
+                self,
+                "Sheet Changed",
+                "The active sheet has changed. This will clear current OCR results. Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.validation_results.clear()
+                self.current_images.clear()
+                self.raw_response_text.clear()
+                self.update_files_display()
+                self.stats_label.setText("Ready to process images")
+                self.verify_button.setEnabled(False)
+                self.save_button.setEnabled(False)
+                self.process_button.setEnabled(self.ocr_enabled)
+                self.verify_status_label.setText("Process images to begin verification")
+
+            active_sheet = self.main_window.active_sheet_name if self.main_window else "(none)"
+            self.active_sheet_label.setText(f"Active Sheet: {active_sheet}")
+
     def clear_all(self):
-        """Clear all data and reset the tab."""
-        reply = QMessageBox.question(self, "Clear All Data", 
+        reply = QMessageBox.question(self, "Clear All Data",
                                    "This will clear all OCR results and selected images. Continue?",
                                    QMessageBox.Yes | QMessageBox.No,
                                    QMessageBox.No)
-        
+
         if reply == QMessageBox.Yes:
             self.validation_results.clear()
             self.current_images.clear()
-            self.verification_table.setRowCount(0)
             self.raw_response_text.clear()
             self.update_files_display()
-            self.update_statistics()
-            self.process_button.setEnabled(False)
+            self.stats_label.setText("Ready to process images")
+            self.verify_button.setEnabled(False)
+            self.save_button.setEnabled(False)
+            self.process_button.setEnabled(self.ocr_enabled)
+            self.verify_status_label.setText("Process images to begin verification")

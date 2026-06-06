@@ -98,6 +98,7 @@ class MainWindow(QWidget):
         )
 
         self.selected_employee = None
+        self.active_sheet_name = None
 
         # State Management
         self.unsaved_changes = 0
@@ -138,6 +139,24 @@ class MainWindow(QWidget):
     def build_ui(self):
         main_layout = QVBoxLayout()
         
+        # Sheet Selector Row
+        sheet_row = QHBoxLayout()
+        sheet_row.addWidget(QLabel("Active Sheet:"))
+        self.sheet_selector = QComboBox()
+        
+        for sheet in self.workbook.worksheets:
+            has_employees = any(emp.sheet_name == sheet.title for emp in self.employees)
+            if has_employees:
+                self.sheet_selector.addItem(sheet.title)
+        
+        if self.sheet_selector.count() > 0:
+            self.sheet_selector.setCurrentIndex(0)
+            self.active_sheet_name = self.sheet_selector.currentText()
+        
+        sheet_row.addWidget(self.sheet_selector)
+        sheet_row.addStretch()
+        main_layout.addLayout(sheet_row)
+        
         # Create tab widget
         self.tab_widget = QTabWidget()
         
@@ -153,7 +172,8 @@ class MainWindow(QWidget):
         # OCR Attendance tab (uses config.json for API key)
         self.ocr_attendance_tab = OCRAttendanceTab(
             self.database_service, 
-            self.attendance_service
+            self.attendance_service,
+            main_window=self
         )
         self.tab_widget.addTab(self.ocr_attendance_tab, "OCR Attendance")
         
@@ -226,6 +246,7 @@ class MainWindow(QWidget):
         self.results_list.itemSelectionChanged.connect(self.on_selection_changed)
         self.mark_button.clicked.connect(self.mark_attendance)
         self.manual_save_button.clicked.connect(self.perform_save)
+        self.sheet_selector.currentTextChanged.connect(self.on_sheet_changed)
         
         # Single-Enter Workflow: Mark from search box
         self.search_box.returnPressed.connect(self.mark_attendance)
@@ -241,7 +262,7 @@ class MainWindow(QWidget):
         if not text:
             return
 
-        results = self.search_service.search(text)
+        results = self.search_service.search(text, sheet_name=self.active_sheet_name)
 
         if not results:
             return
@@ -265,6 +286,19 @@ class MainWindow(QWidget):
         
         self.selected_employee = selected_items[0].data(32)
 
+    def on_sheet_changed(self, sheet_name):
+        self.active_sheet_name = sheet_name
+        # Refresh search if there is text
+        if self.search_box.text():
+            self.on_search_changed(self.search_box.text())
+        
+        # Update OCR tab's active sheet label (always)
+        self.ocr_attendance_tab.active_sheet_label.setText(f"Active Sheet: {sheet_name}")
+        
+        # Refresh OCR tab if it's visible (shows confirmation dialog)
+        if self.ocr_attendance_tab.isVisible():
+            self.ocr_attendance_tab.refresh_sheet()
+
     def mark_attendance(self):
         if not self.selected_employee:
             QMessageBox.warning(
@@ -283,6 +317,7 @@ class MainWindow(QWidget):
             self.selected_employee,
             day,
             shift,
+            self.active_sheet_name,
         )
 
         # Audit Log

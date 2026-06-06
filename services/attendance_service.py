@@ -40,7 +40,19 @@ class AttendanceService:
         employee,
         day,
         shift,
+        active_sheet_name: str
     ):
+        """
+        Mark attendance for an employee on a specific day and shift.
+        Includes safety check to ensure employee belongs to the active sheet.
+        """
+        # Safety Check: Ensure employee belongs to the selected sheet
+        if employee.sheet_name != active_sheet_name:
+            raise ValueError(
+                f"Sheet mismatch! Employee {employee.employee_id} belongs to '{employee.sheet_name}', "
+                f"but attempt made to write to '{active_sheet_name}'."
+            )
+
         sheet = self.workbook[employee.sheet_name]
 
         column = self.dates[day]

@@ -2,13 +2,14 @@
 API Key Configuration Dialog
 First-launch dialog for entering Gemini API key.
 """
+import logging
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
     QPushButton, QMessageBox, QCheckBox, QGroupBox
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
 from core.config import config
+
 
 
 class ApiKeyDialog(QDialog):

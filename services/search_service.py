@@ -1,3 +1,4 @@
+from typing import Optional
 from rapidfuzz import process, fuzz
 from database.database_service import DatabaseService
 
@@ -20,7 +21,7 @@ class SearchService:
         # Legacy support - keep employees list for fallback if needed
         self.employees_list = employees or []
 
-    def search(self, query, limit=10):
+    def search(self, query, limit=10, sheet_name: Optional[str] = None):
         """
         Search employees using SQLite database with fuzzy matching fallback.
         Returns results in the same format as the original implementation.
@@ -32,11 +33,16 @@ class SearchService:
 
         try:
             # First, try exact SQLite search (fast)
-            db_results = self.database_service.search_employees(query, limit * 2)
+            db_results = self.database_service.search_employees(query, limit * 2, sheet_name=sheet_name)
             
             if db_results:
                 # Convert database results to Employee objects
                 employee_objects = self.database_service.search_employees_as_objects(query, limit * 2)
+                
+                # If sheet_name was provided, filter the employee objects (the DB call should have done this, 
+                # but for robust matching with fuzzy fallback we filter them here too)
+                if sheet_name:
+                    employee_objects = [emp for emp in employee_objects if emp.sheet_name == sheet_name]
                 
                 # Return in expected format
                 results = []
@@ -74,7 +80,7 @@ class SearchService:
             
             # If SQLite search didn't find good matches, try fuzzy search
             # Get more employees from database for fuzzy matching
-            all_employees = self.database_service.search_employees("", limit * 5)  # Get broader set
+            all_employees = self.database_service.search_employees("", limit * 5, sheet_name=sheet_name)
             
             if all_employees:
                 employee_objects = []

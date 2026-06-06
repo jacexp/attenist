@@ -122,20 +122,33 @@ class EmployeeDatabase:
         finally:
             conn.close()
     
-    def search_employees(self, query: str, limit: int = 50) -> List[dict]:
-        """Search employees by name or ID."""
+    def search_employees(self, query: str, limit: int = 50, sheet_name: Optional[str] = None) -> List[dict]:
+        """Search employees by name or ID, optionally filtered by sheet."""
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             
-            # Search by ID or name (case insensitive)
-            cursor.execute("""
-                SELECT emp_id, emp_name, rank, created_at, updated_at
-                FROM employees 
-                WHERE emp_id LIKE ? OR emp_name LIKE ?
-                ORDER BY emp_name
-                LIMIT ?
-            """, (f"%{query}%", f"%{query}%", limit))
+            query_param = f"%{query}%"
+            
+            if sheet_name:
+                # Filtered search
+                cursor.execute("""
+                    SELECT emp_id, emp_name, rank, created_at, updated_at
+                    FROM employees 
+                    WHERE (emp_id LIKE ? OR emp_name LIKE ?)
+                    AND sheet_name = ?
+                    ORDER BY emp_name
+                    LIMIT ?
+                """, (query_param, query_param, sheet_name, limit))
+            else:
+                # Global search
+                cursor.execute("""
+                    SELECT emp_id, emp_name, rank, created_at, updated_at
+                    FROM employees 
+                    WHERE emp_id LIKE ? OR emp_name LIKE ?
+                    ORDER BY emp_name
+                    LIMIT ?
+                """, (query_param, query_param, limit))
             
             results = []
             for row in cursor.fetchall():
