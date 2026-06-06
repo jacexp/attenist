@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QPushButton, QMessageBox, QCheckBox, QGroupBox
 )
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from core.config import config
 
 
