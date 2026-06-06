@@ -803,7 +803,7 @@ class OCRAttendanceTab(QWidget):
         if not self.validation_results:
             return
 
-        active_sheet = self.main_window.active_sheet_name if self.main_window else ""
+        active_sheet = self.main_window.active_sheet_name if self.main_window else None
         if not active_sheet:
             QMessageBox.warning(self, "No Active Sheet",
                               "Please select an active sheet first.")
@@ -869,7 +869,7 @@ class OCRAttendanceTab(QWidget):
 
         day = int(self.date_combo.currentText())
 
-        active_sheet = self.main_window.active_sheet_name if self.main_window else ""
+        active_sheet = self.main_window.active_sheet_name if self.main_window else None
         workbook_name = Path(self.main_window.workbook_path).name if self.main_window else "(unknown)"
 
         stats = self.validation_service.get_validation_statistics()
