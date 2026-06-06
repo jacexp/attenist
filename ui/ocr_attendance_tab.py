@@ -193,7 +193,7 @@ class EmployeeSearchDialog(QDialog):
         if current_item:
             emp = current_item.data(Qt.UserRole)
             # Hard safety: verify sheet before applying
-            if self.scope_toggle.isChecked() and self.sheet_name:
+            if self.sheet_name:
                 if emp.sheet_name != self.sheet_name:
                     QMessageBox.warning(
                         self,
