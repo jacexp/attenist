@@ -825,24 +825,18 @@ class OCRAttendanceTab(QWidget):
 
     def _on_model_changed(self, text: str):
         """Handle model selection or manual entry."""
-        # Extract the raw model name from the selection or typed text
-        actual = text
-        idx = self.model_combo.currentIndex()
-        if idx >= 0:
-            data = self.model_combo.itemData(idx)
-            if isinstance(data, str) and data:
-                actual = data
-        # Fallback: strip metadata label if present
-        if actual and ' (' in actual and actual.endswith(')'):
-            parts = actual.rsplit(' (', 1)
-            if len(parts) == 2:
-                actual = parts[0]
-
+        # Get the raw model name using the helper method
+        actual = self._get_current_raw_model_name()
+        
         if not actual:
             return
 
+        logging.info(f"MODEL_FORMAT_DEBUG: Model changed")
+        logging.info(f"  Display text: '{text}'")
+        logging.info(f"  Raw model name: '{actual}'")
+        
         config.set_gemini_model(actual)
-        logging.info(f"Model changed to: {actual}")
+        logging.info(f"Model saved to config: {actual}")
         self.conn_status_label.setText("")
         if self.ocr_service:
             self.ocr_service = OCRService(
@@ -875,8 +869,13 @@ class OCRAttendanceTab(QWidget):
             if models:
                 for m in models:
                     label = "Vision" if m.get('supports_vision', False) else "Text Only"
-                    display_text = f"{m['name']} ({label})"
-                    self.model_combo.addItem(display_text, m['name'])
+                    display_name = m.get('display_name', m['name'])
+                    friendly_text = f"{display_name}"
+                    api_name = m['name']
+                    display_text = f"{friendly_text} ({api_name}) ({label})"
+                    
+                    # Store raw API identifier as user data
+                    self.model_combo.addItem(display_text, api_name)
                     idx = self.model_combo.count() - 1
                     self.model_combo.setItemData(
                         idx, m.get('supports_vision', False), Qt.UserRole + 1
@@ -886,13 +885,17 @@ class OCRAttendanceTab(QWidget):
                     )
 
                 # Try to restore previous selection
-                target = previous_model
-                idx = self.model_combo.findData(target)
-                if idx < 0 and target in ['gemini-2.5-flash', 'gemini-flash-latest']:
-                    # Fallback: try common aliases
-                    alt = 'gemini-2.5-flash' if target == 'gemini-flash-latest' else None
-                    if alt:
-                        idx = self.model_combo.findData(alt)
+                target_raw = previous_model
+                target_norm = GeminiClient.normalize_model_name(previous_model) if previous_model else None
+                
+                idx = self.model_combo.findData(target_raw)
+                if idx < 0 and target_norm:
+                    # Try normalized version for backward compat with old config format
+                    for i in range(self.model_combo.count()):
+                        data = self.model_combo.itemData(i)
+                        if isinstance(data, str) and GeminiClient.normalize_model_name(data) == target_norm:
+                            idx = i
+                            break
                 if idx >= 0:
                     self.model_combo.setCurrentIndex(idx)
 
@@ -927,10 +930,13 @@ class OCRAttendanceTab(QWidget):
             return
         self.test_btn.setEnabled(False)
         self.conn_status_label.setText("Testing...")
+        
+        # Get the raw model name (not display text)
+        raw_model = self._get_current_raw_model_name()
+        logging.info(f"MODEL_FORMAT_DEBUG: Test Connection using model: '{raw_model}'")
+        
         # Run test synchronously (fast operation, no thread needed)
-        result = self.ocr_service.test_connection(
-            model=self.model_combo.currentText()
-        )
+        result = self.ocr_service.test_connection(model=raw_model)
         self.test_btn.setEnabled(True)
         if result["success"]:
             self.conn_status_label.setText(
@@ -938,10 +944,34 @@ class OCRAttendanceTab(QWidget):
             )
             self.conn_status_label.setStyleSheet("color: green; font-size: 9pt;")
         else:
-            self.conn_status_label.setText(
-                f"FAIL — {result.get('error', 'unknown error')}"
-            )
+            # Enhanced error message for model format issues
+            error_msg = result.get('error', 'unknown error')
+            if "INVALID_ARGUMENT" in error_msg and "model" in error_msg.lower():
+                detailed_msg = f"Model Format Error\nRaw: {raw_model}\nError: {error_msg}"
+                self.conn_status_label.setText(detailed_msg)
+            else:
+                self.conn_status_label.setText(f"FAIL — {error_msg}")
             self.conn_status_label.setStyleSheet("color: red; font-size: 9pt;")
+
+    def _get_current_raw_model_name(self) -> str:
+        """Get the raw model name (API identifier) from current selection."""
+        idx = self.model_combo.currentIndex()
+        if idx >= 0:
+            # Try to get raw model name from item data
+            data = self.model_combo.itemData(idx)
+            if isinstance(data, str) and data:
+                return data
+        
+        # Fall back to current text (manual entry or no data available)
+        text = self.model_combo.currentText()
+        
+        # Strip metadata label if present (e.g., "gemini-2.5-flash (Vision)" -> "gemini-2.5-flash")
+        if text and ' (' in text and text.endswith(')'):
+            parts = text.rsplit(' (', 1)
+            if len(parts) == 2:
+                return parts[0]
+        
+        return text
 
     def _enable_ocr_controls(self, enabled: bool):
         self.ocr_enabled = enabled

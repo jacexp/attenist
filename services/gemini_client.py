@@ -17,6 +17,25 @@ class GeminiClient:
     Supports Google's public endpoint and custom gateways (OpenRouter, LiteLLM, custom proxies).
     """
     
+    @staticmethod
+    def normalize_model_name(model_name: str) -> str:
+        """
+        Normalize model name for API calls.
+        
+        The models.list() API returns names like 'models/gemini-2.5-flash'
+        but generate_content() expects just 'gemini-2.5-flash'.
+        """
+        if not model_name:
+            return model_name
+            
+        # Remove 'models/' prefix if present
+        if model_name.startswith('models/'):
+            normalized = model_name[7:]  # Remove 'models/' prefix
+        else:
+            normalized = model_name
+            
+        return normalized
+    
     def __init__(self, api_key: Optional[str] = None,
                  model: Optional[str] = None,
                  provider: Optional[str] = None,
@@ -37,7 +56,8 @@ class GeminiClient:
         
         self.base_url = base_url or config.get_gemini_base_url() or settings.get_base_url()
         self.provider = provider or config.get_gemini_provider() or settings.get_provider()
-        self.model_name = model or config.get_gemini_model() or settings.get_model_name()
+        self.raw_model_name = model or config.get_gemini_model() or settings.get_model_name()
+        self.model_name = self.normalize_model_name(self.raw_model_name)
         
         try:
             # Configure client with optional custom base URL for provider/gateway
@@ -52,7 +72,8 @@ class GeminiClient:
             logging.info(f"=== Gemini Client Diagnostics ===")
             logging.info(f"Provider: {self.provider}")
             logging.info(f"Endpoint: {endpoint}")
-            logging.info(f"Model: {self.model_name}")
+            logging.info(f"Raw Model: {self.raw_model_name}")
+            logging.info(f"Normalized Model: {self.model_name}")
             logging.info(f"==================================")
             
         except Exception as e:
@@ -87,7 +108,10 @@ class GeminiClient:
                         content.append(img)
             
             # Log the model being used for this request
-            logging.debug(f"OCR Request -> Model: {self.model_name}, Images: {len(images) if images else 0}")
+            logging.info(f"MODEL_FORMAT_DEBUG: Making API call")
+            logging.info(f"  Raw model name (from config): '{self.raw_model_name}'")
+            logging.info(f"  Normalized model name (for API): '{self.model_name}'")
+            logging.info(f"  Images count: {len(images) if images else 0}")
             
             response = self.client.models.generate_content(
                 model=self.model_name,
@@ -97,12 +121,29 @@ class GeminiClient:
             if not response.text:
                 raise RuntimeError("Provider returned an empty response.")
                 
-            logging.debug(f"OCR Response <- Length: {len(response.text)} chars")
+            logging.info(f"MODEL_FORMAT_DEBUG: API call successful")
+            logging.info(f"  Response length: {len(response.text)} chars")
             return response.text
             
         except Exception as e:
-            logging.error(f"Provider API call failed: {e}")
-            raise RuntimeError(f"Provider API error: {e}")
+            logging.error(f"MODEL_FORMAT_DEBUG: API call failed")
+            logging.error(f"  Raw model name: '{self.raw_model_name}'")
+            logging.error(f"  Normalized model name: '{self.model_name}'")
+            logging.error(f"  Error: {e}")
+            
+            # Provide enhanced error message for model format issues
+            if "INVALID_ARGUMENT" in str(e) and "model" in str(e).lower():
+                enhanced_msg = (
+                    f"Selected model is using an invalid API identifier.\n\n"
+                    f"Raw Model: {self.raw_model_name}\n"
+                    f"Normalized Model: {self.model_name}\n"
+                    f"Provider Error: {e}\n\n"
+                    f"This may indicate a model name format issue. "
+                    f"Check that the model name is compatible with your provider."
+                )
+                raise RuntimeError(enhanced_msg)
+            else:
+                raise RuntimeError(f"Provider API error: {e}")
     
     def list_models(self) -> List[Dict[str, Any]]:
         """List all available models from the provider with metadata."""
@@ -132,6 +173,12 @@ class GeminiClient:
                     'generation_methods': generation_methods
                 }
                 all_models.append(model_info)
+                
+                # Log detailed model information for debugging
+                logging.info(f"MODEL_FORMAT_DEBUG: discovered model")
+                logging.info(f"  Raw name from API: '{m.name}'")
+                logging.info(f"  Display name: '{getattr(m, 'display_name', m.name)}'")
+                logging.info(f"  Supports vision: {supports_vision}")
                     
             logging.info(f"MODEL_DISCOVERY: Provider returned {len(all_models)} total models")
             for model in all_models:

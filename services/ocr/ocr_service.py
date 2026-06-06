@@ -65,19 +65,26 @@ Rules:
 """
     
     def _discover_models(self):
-        """Attempt to discover available vision models from provider."""
+        """Attempt to discover available models from provider."""
         try:
-            available_models = self.gemini_client.list_models()
-            if available_models:
-                for model in available_models:
-                    logging.info(f"Provider model available: {model}")
-                current_model = config.get_gemini_model()
-                if current_model not in available_models:
-                    logging.warning(f"Configured model '{current_model}' not in available models list")
+            models = self.gemini_client.list_models()
+            if models:
+                for m in models:
+                    logging.info(
+                        f"MODEL_FORMAT_DEBUG: Available: name='{m.get('name')}' "
+                        f"display='{m.get('display_name')}' "
+                        f"vision={m.get('supports_vision')}"
+                    )
+                current = config.get_gemini_model()
+                raw_names = [m.get('name', '') for m in models]
+                normalized = [GeminiClient.normalize_model_name(m.get('name', '')) for m in models]
+                all_variants = set(raw_names + normalized)
+                if current in all_variants:
+                    logging.info(f"Configured model '{current}' is available")
                 else:
-                    logging.info(f"Configured model '{current_model}' is available")
+                    logging.warning(f"Configured model '{current}' not found in available models")
             else:
-                logging.info("Provider does not support model discovery or no vision models found")
+                logging.info("Provider does not support model discovery")
         except Exception as e:
             logging.warning(f"Model discovery skipped: {e}")
     
