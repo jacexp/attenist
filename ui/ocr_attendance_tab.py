@@ -885,8 +885,7 @@ class OCRAttendanceTab(QWidget):
         if self.ocr_service:
             self.ocr_service = OCRService(
                 api_key=config.get_gemini_api_key(),
-                model=actual,
-                discover_models=False  # Skip discovery during model change
+                model=actual
             )
 
     def _refresh_models(self):
