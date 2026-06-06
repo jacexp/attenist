@@ -537,7 +537,7 @@ class VerificationSummaryDialog(QDialog):
             f"Skipped:  {skipped}",
             "",
             f"Shift:  {shift}",
-            f"Rows To Mark:  {rows_to_mark}",
+            f"Rows To Mark:  {self.rows_to_mark}",
         ]
 
         for line in lines:
@@ -1118,6 +1118,27 @@ class OCRAttendanceTab(QWidget):
         self.validation_results = wizard.get_results()
         self.update_statistics()
         self.update_commit_readiness()
+
+        # Show verification summary
+        stats = self.validation_service.get_validation_statistics()
+        corrected = sum(1 for r in self.validation_results if r.manually_corrected)
+        skipped = sum(1 for r in self.validation_results if not r.is_checked)
+        ready = len(self.validation_service.filter_ready_for_commit(self.validation_results))
+
+        summary_lines = [
+            f"Total Records:  {stats['total_processed']}",
+            f"Confirmed:  {stats['confirmed']}",
+            f"Manually Corrected:  {corrected}",
+            f"Skipped:  {skipped}",
+            f"Unmatched:  {stats['unmatched']}",
+            f"Unreadable:  {stats['unreadable']}",
+            "",
+            f"Ready to Commit:  {ready}",
+        ]
+        QMessageBox.information(
+            self, "Verification Complete",
+            "\n".join(summary_lines)
+        )
 
     def update_statistics(self):
         if not self.validation_results:
