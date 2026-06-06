@@ -154,6 +154,14 @@ class EmployeeSearchDialog(QDialog):
         current_sheet = self.sheet_name if self.scope_toggle.isChecked() else None
 
         try:
+            # Get total employee counts for diagnostics
+            if current_sheet:
+                total_in_sheet = len(self.validation_service.workbook_service.get_employees_by_sheet_as_objects(current_sheet))
+                total_employees = self.validation_service.workbook_service.get_employee_count()
+            else:
+                total_employees = self.validation_service.workbook_service.get_employee_count()
+                total_in_sheet = total_employees
+
             employees = self.validation_service.search_employees_for_manual_match(
                 query, sheet_name=current_sheet, limit=100
             )
@@ -162,6 +170,16 @@ class EmployeeSearchDialog(QDialog):
             if not self.scope_toggle.isChecked():
                 results_text += " (all sheets)"
             self.count_label.setText(results_text)
+
+            # Log comprehensive search diagnostics
+            logging.info(
+                f"SEARCH_DIAGNOSTICS: "
+                f"query='{query}' "
+                f"active_sheet='{current_sheet or 'ALL'}' "
+                f"employees_loaded={total_employees} "
+                f"employees_filtered={total_in_sheet if current_sheet else total_employees} "
+                f"results_displayed={len(employees)}"
+            )
 
             # Auto-select first row for quick Enter key acceptance
             first_row = 0
@@ -242,40 +260,82 @@ class VerificationWizard(QDialog):
     def setup_ui(self):
         self.setWindowTitle("Verification Wizard")
         self.setModal(True)
-        self.resize(600, 450)
+        self.resize(700, 550)
 
         layout = QVBoxLayout()
 
+        # Enhanced progress counter
         self.progress_label = QLabel()
         self.progress_label.setFont(QFont("", 10, QFont.Bold))
         layout.addWidget(self.progress_label)
 
-        card = QFrame()
-        card.setFrameStyle(QFrame.Box | QFrame.Raised)
-        card.setStyleSheet("QFrame { background-color: #f8f8f8; padding: 16px; }")
-        card_layout = QVBoxLayout(card)
+        # Keyboard shortcuts help
+        shortcuts_label = QLabel("Shortcuts: Enter=Accept+Next • Ctrl+Enter=Change Match • ←→=Navigate • Esc=Skip")
+        shortcuts_label.setStyleSheet("color: #666; font-size: 9pt; font-style: italic; margin-bottom: 8px;")
+        layout.addWidget(shortcuts_label)
+
+        # OCR Data Card
+        ocr_card = QFrame()
+        ocr_card.setFrameStyle(QFrame.Box | QFrame.Raised)
+        ocr_card.setStyleSheet("QFrame { background-color: #f8f8f8; padding: 16px; }")
+        ocr_layout = QVBoxLayout(ocr_card)
+
+        ocr_header = QLabel("OCR Data:")
+        ocr_header.setFont(QFont("", 12, QFont.Bold))
+        ocr_header.setStyleSheet("color: #333; margin-bottom: 4px;")
+        ocr_layout.addWidget(ocr_header)
 
         self.ocr_id_label = QLabel()
-        self.ocr_id_label.setFont(QFont("Courier", 20, QFont.Bold))
+        self.ocr_id_label.setFont(QFont("Courier", 18, QFont.Bold))
         self.ocr_id_label.setStyleSheet("color: #333;")
-        card_layout.addWidget(self.ocr_id_label)
+        ocr_layout.addWidget(self.ocr_id_label)
 
         self.ocr_name_label = QLabel()
-        self.ocr_name_label.setFont(QFont("", 14))
+        self.ocr_name_label.setFont(QFont("", 13))
         self.ocr_name_label.setStyleSheet("color: #555;")
-        card_layout.addWidget(self.ocr_name_label)
+        ocr_layout.addWidget(self.ocr_name_label)
 
         self.notes_label = QLabel()
         self.notes_label.setStyleSheet("color: #888; margin-top: 8px;")
-        card_layout.addWidget(self.notes_label)
+        ocr_layout.addWidget(self.notes_label)
 
-        layout.addWidget(card)
+        layout.addWidget(ocr_card)
+
+        # Live Preview Card (initially hidden)
+        self.preview_card = QFrame()
+        self.preview_card.setFrameStyle(QFrame.Box | QFrame.Raised)
+        self.preview_card.setStyleSheet("QFrame { background-color: #e8f5e8; padding: 16px; border: 2px solid #4CAF50; }")
+        preview_layout = QVBoxLayout(self.preview_card)
+
+        preview_header = QLabel("✓ Selected Employee:")
+        preview_header.setFont(QFont("", 12, QFont.Bold))
+        preview_header.setStyleSheet("color: #2E7D32; margin-bottom: 4px;")
+        preview_layout.addWidget(preview_header)
+
+        self.preview_id_label = QLabel()
+        self.preview_id_label.setFont(QFont("Courier", 16, QFont.Bold))
+        self.preview_id_label.setStyleSheet("color: #2E7D32;")
+        preview_layout.addWidget(self.preview_id_label)
+
+        self.preview_name_label = QLabel()
+        self.preview_name_label.setFont(QFont("", 12))
+        self.preview_name_label.setStyleSheet("color: #2E7D32;")
+        preview_layout.addWidget(self.preview_name_label)
+
+        self.preview_status_label = QLabel()
+        self.preview_status_label.setFont(QFont("", 10, QFont.Bold))
+        self.preview_status_label.setStyleSheet("color: #4CAF50; margin-top: 4px;")
+        preview_layout.addWidget(self.preview_status_label)
+
+        self.preview_card.setVisible(False)
+        layout.addWidget(self.preview_card)
 
         self.match_group = QGroupBox("Suggested Matches")
         match_layout = QVBoxLayout()
 
         self.match_list = QListWidget()
         self.match_list.itemDoubleClicked.connect(self.accept_match)
+        self.match_list.currentItemChanged.connect(self.on_match_selection_changed)
         match_layout.addWidget(self.match_list)
 
         self.no_match_label = QLabel("No possible matches found in this sheet.")
@@ -308,9 +368,17 @@ class VerificationWizard(QDialog):
         self.setLayout(layout)
 
     def show_current_record(self):
+        # Enhanced progress counter
         remaining = len(self.problem_rows) - self.current_index
         total = len(self.problem_rows)
-        self.progress_label.setText(f"Records needing review: {remaining} remaining out of {total}")
+        current_num = self.current_index + 1
+        reviewed = self.current_index
+        
+        self.progress_label.setText(
+            f"Current Record: {current_num} / {total}  •  "
+            f"Reviewed: {reviewed}  •  "
+            f"Remaining: {remaining}"
+        )
 
         if self.current_index >= len(self.problem_rows):
             self.accept()
@@ -321,6 +389,12 @@ class VerificationWizard(QDialog):
         self.ocr_id_label.setText(result.ocr_id)
         self.ocr_name_label.setText(result.ocr_name or "(no name detected)")
         self.notes_label.setText(result.validation_notes)
+
+        # Update live preview based on current status
+        if result.matched_employee:
+            self.show_live_preview(result.matched_employee, "Manual Correction Applied")
+        else:
+            self.hide_live_preview()
 
         self.match_list.clear()
         self.no_match_label.setVisible(False)
@@ -351,6 +425,23 @@ class VerificationWizard(QDialog):
             self.match_group.setVisible(False)
             self.accept_btn.setEnabled(False)
 
+    def show_live_preview(self, employee, status_text="Match Selected"):
+        """Show live preview of selected employee."""
+        self.preview_id_label.setText(employee.employee_id)
+        self.preview_name_label.setText(f"{employee.name} ({employee.rank or 'No Rank'})")
+        self.preview_status_label.setText(status_text)
+        self.preview_card.setVisible(True)
+
+    def hide_live_preview(self):
+        """Hide live preview card."""
+        self.preview_card.setVisible(False)
+
+    def on_match_selection_changed(self, current, previous):
+        """Show live preview when user selects a suggested match."""
+        if current and current.data(Qt.UserRole):
+            emp = current.data(Qt.UserRole)
+            self.show_live_preview(emp, "Selected Match (Press Enter to Accept)")
+
     def accept_match(self):
         result = self.problem_rows[self.current_index]
 
@@ -379,11 +470,22 @@ class VerificationWizard(QDialog):
                 f"employee={emp.employee_id} emp_sheet='{emp.sheet_name}' "
                 f"active_sheet='{self.sheet_name}'"
             )
+            
+            # Apply manual correction
             self.validation_service.manual_correction(
                 result, selected_employee=emp, sheet_name=self.sheet_name
             )
-            self.current_index += 1
-            self.show_current_record()
+            
+            # Immediately update UI to show the new match
+            self.show_live_preview(emp, "Manual Correction Applied")
+            
+            # Update the notes to reflect the change
+            self.notes_label.setText(f"Manually matched to {emp.employee_id} - {emp.name}")
+            
+            # Auto-advance to next record (configurable)
+            if config.get_verification_auto_advance():
+                self.current_index += 1
+                self.show_current_record()
 
     def skip_record(self):
         result = self.problem_rows[self.current_index]
@@ -391,6 +493,18 @@ class VerificationWizard(QDialog):
         result.checkbox_enabled = False
         self.current_index += 1
         self.show_current_record()
+
+    def next_record(self):
+        """Navigate to next record without accepting current match."""
+        if self.current_index < len(self.problem_rows) - 1:
+            self.current_index += 1
+            self.show_current_record()
+
+    def previous_record(self):
+        """Navigate to previous record."""
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.show_current_record()
 
     def get_results(self) -> List[OCRValidationResult]:
         return self.all_results
@@ -518,6 +632,13 @@ class OCRAttendanceTab(QWidget):
         self.setup_ui()
         self.setup_connections()
         self.initialize_ocr_service()
+        # Attempt initial model discovery from provider
+        if config.has_valid_api_key():
+            try:
+                self._refresh_models()
+            except Exception as e:
+                logging.warning(f"Initial model discovery failed: {e}")
+                # User can use Refresh Models button to retry
 
     def setup_ui(self):
         main_layout = QVBoxLayout()
@@ -552,13 +673,15 @@ class OCRAttendanceTab(QWidget):
         model_layout = QHBoxLayout()
         model_layout.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(config.SUPPORTED_MODELS)
-        current_model = config.get_gemini_model()
-        idx = self.model_combo.findText(current_model)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
+        self.model_combo.setEditable(True)
+        self.model_combo.setMinimumWidth(280)
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
         model_layout.addWidget(self.model_combo)
+
+        self.refresh_models_btn = QPushButton("Refresh Models")
+        self.refresh_models_btn.clicked.connect(self._refresh_models)
+        self.refresh_models_btn.setStyleSheet("font-size: 9pt; padding: 2px 8px;")
+        model_layout.addWidget(self.refresh_models_btn)
 
         self.test_btn = QPushButton("Test Connection")
         self.test_btn.clicked.connect(self._test_connection)
@@ -700,15 +823,102 @@ class OCRAttendanceTab(QWidget):
             self._add_configure_button()
             logging.info("OCR disabled: No API key configured")
 
-    def _on_model_changed(self, model_name: str):
-        config.set_gemini_model(model_name)
-        logging.info(f"Model changed to: {model_name}")
+    def _on_model_changed(self, text: str):
+        """Handle model selection or manual entry."""
+        # Extract the raw model name from the selection or typed text
+        actual = text
+        idx = self.model_combo.currentIndex()
+        if idx >= 0:
+            data = self.model_combo.itemData(idx)
+            if isinstance(data, str) and data:
+                actual = data
+        # Fallback: strip metadata label if present
+        if actual and ' (' in actual and actual.endswith(')'):
+            parts = actual.rsplit(' (', 1)
+            if len(parts) == 2:
+                actual = parts[0]
+
+        if not actual:
+            return
+
+        config.set_gemini_model(actual)
+        logging.info(f"Model changed to: {actual}")
         self.conn_status_label.setText("")
         if self.ocr_service:
             self.ocr_service = OCRService(
                 api_key=config.get_gemini_api_key(),
-                model=model_name
+                model=actual
             )
+
+    def _refresh_models(self):
+        """Re-query provider and repopulate the model dropdown."""
+        if not config.has_valid_api_key():
+            QMessageBox.warning(self, "API Key Required",
+                                "Configure a valid API key before refreshing models.")
+            return
+
+        self.refresh_models_btn.setEnabled(False)
+        self.conn_status_label.setText("Fetching models...")
+        self.conn_status_label.setStyleSheet("color: #666; font-size: 9pt;")
+
+        try:
+            from services.gemini_client import GeminiClient
+            client = GeminiClient()
+            models = client.list_models()
+
+            # Remember previously selected model from config
+            previous_model = config.get_gemini_model()
+
+            self.model_combo.blockSignals(True)
+            self.model_combo.clear()
+
+            if models:
+                for m in models:
+                    label = "Vision" if m.get('supports_vision', False) else "Text Only"
+                    display_text = f"{m['name']} ({label})"
+                    self.model_combo.addItem(display_text, m['name'])
+                    idx = self.model_combo.count() - 1
+                    self.model_combo.setItemData(
+                        idx, m.get('supports_vision', False), Qt.UserRole + 1
+                    )
+                    self.model_combo.setItemData(
+                        idx, label, Qt.ToolTipRole
+                    )
+
+                # Try to restore previous selection
+                target = previous_model
+                idx = self.model_combo.findData(target)
+                if idx < 0 and target in ['gemini-2.5-flash', 'gemini-flash-latest']:
+                    # Fallback: try common aliases
+                    alt = 'gemini-2.5-flash' if target == 'gemini-flash-latest' else None
+                    if alt:
+                        idx = self.model_combo.findData(alt)
+                if idx >= 0:
+                    self.model_combo.setCurrentIndex(idx)
+
+                logging.info(f"MODEL_DISCOVERY: Total Models Returned: {len(models)}")
+                logging.info(f"MODEL_DISCOVERY: Total Models Displayed: {self.model_combo.count()}")
+                self.conn_status_label.setText(f"Loaded {self.model_combo.count()} models")
+                self.conn_status_label.setStyleSheet("color: green; font-size: 9pt;")
+            else:
+                self.model_combo.addItem(
+                    config.get_gemini_model() or "Enter model name",
+                    config.get_gemini_model()
+                )
+                logging.warning("MODEL_DISCOVERY: Provider returned 0 models")
+                self.conn_status_label.setText("No models returned — enter manually")
+                self.conn_status_label.setStyleSheet("color: orange; font-size: 9pt;")
+
+        except Exception as e:
+            logging.error(f"MODEL_DISCOVERY: Failed to refresh models: {e}")
+            self.conn_status_label.setText(f"Error: {e}")
+            self.conn_status_label.setStyleSheet("color: red; font-size: 9pt;")
+            if self.model_combo.count() == 0:
+                default = config.get_gemini_model() or "Enter model name"
+                self.model_combo.addItem(default, config.get_gemini_model())
+        finally:
+            self.model_combo.blockSignals(False)
+            self.refresh_models_btn.setEnabled(True)
 
     def _test_connection(self):
         if not self.ocr_service:

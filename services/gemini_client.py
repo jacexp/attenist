@@ -104,25 +104,41 @@ class GeminiClient:
             logging.error(f"Provider API call failed: {e}")
             raise RuntimeError(f"Provider API error: {e}")
     
-    def list_models(self) -> List[str]:
-        """List all available models that support vision."""
+    def list_models(self) -> List[Dict[str, Any]]:
+        """List all available models from the provider with metadata."""
         try:
             models = self.client.models.list()
-            vision_models = []
+            all_models = []
+            
             for m in models:
-                # Check if model supports images (vision)
-                # In the new SDK, we can check capabilities
-                if 'vision' in m.supported_generation_methods or 'image' in str(m.capabilities).lower():
-                    vision_models.append(m.name)
-                # Fallback for known vision models if capabilities aren't explicit
-                elif 'flash' in m.name or 'pro' in m.name:
-                    vision_models.append(m.name)
+                # Extract model capabilities
+                capabilities = getattr(m, 'capabilities', {})
+                generation_methods = getattr(m, 'supported_generation_methods', [])
+                
+                # Determine if model supports vision
+                supports_vision = (
+                    'vision' in str(generation_methods).lower() or
+                    'image' in str(capabilities).lower() or
+                    'multimodal' in str(capabilities).lower()
+                )
+                
+                # Create model metadata entry
+                model_info = {
+                    'name': m.name,
+                    'description': getattr(m, 'description', ''),
+                    'display_name': getattr(m, 'display_name', m.name),
+                    'supports_vision': supports_vision,
+                    'capabilities': capabilities,
+                    'generation_methods': generation_methods
+                }
+                all_models.append(model_info)
                     
-            logging.info(f"Discovered {len(vision_models)} vision-capable models from provider")
-            for model in vision_models:
-                logging.info(f"  Available: {model}")
+            logging.info(f"MODEL_DISCOVERY: Provider returned {len(all_models)} total models")
+            for model in all_models:
+                vision_label = "(Vision)" if model['supports_vision'] else "(Text Only)"
+                logging.info(f"MODEL_DISCOVERY: {model['name']} {vision_label}")
                     
-            return vision_models
+            return all_models
         except Exception as e:
-            logging.warning(f"Model discovery failed (provider may not support listing): {e}")
+            logging.warning(f"MODEL_DISCOVERY: Failed to list models from provider: {e}")
             return []

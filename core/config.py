@@ -11,13 +11,6 @@ from typing import Optional, Dict, Any
 
 class ConfigManager:
     """Manages application configuration stored in config.json."""
-    
-    SUPPORTED_MODELS = [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-flash-latest",
-        "gemini-pro",
-    ]
 
     DEFAULT_CONFIG = {
         "gemini_api_key": "",
@@ -96,6 +89,15 @@ class ConfigManager:
     
     def set_gemini_model(self, model: str) -> None:
         self.set("gemini_model", model)
+
+    def get_verification_auto_advance(self) -> bool:
+        """Get auto-advance setting for verification wizard (default: True)."""
+        return self._config.get("verification_auto_advance", True)
+
+    def set_verification_auto_advance(self, enabled: bool) -> None:
+        """Set auto-advance setting for verification wizard."""
+        self._config["verification_auto_advance"] = enabled
+        self._save_config(self._config)
 
 
 # Global config instance

@@ -88,8 +88,9 @@ class ApiKeyDialog(QDialog):
         model_layout = QHBoxLayout()
         model_layout.addWidget(QLabel("Model:"))
         self.model_input = QLineEdit()
-        self.model_input.setPlaceholderText("gemini-flash-latest")
-        self.model_input.setText("gemini-flash-latest")
+        default_model = config.get_gemini_model() or "gemini-2.5-flash"
+        self.model_input.setPlaceholderText(default_model)
+        self.model_input.setText(default_model)
         model_layout.addWidget(self.model_input)
         advanced_layout.addLayout(model_layout)
         
@@ -142,7 +143,7 @@ class ApiKeyDialog(QDialog):
         config.set_gemini_api_key(api_key)
         config.set_gemini_provider(self.provider_input.text().strip() or "google")
         config.set_gemini_base_url(self.base_url_input.text().strip())
-        config.set_gemini_model(self.model_input.text().strip() or "gemini-flash-latest")
+        config.set_gemini_model(self.model_input.text().strip() or config.get_gemini_model() or "gemini-2.5-flash")
         
         logging.info("Gemini API key saved successfully")
         QMessageBox.information(self, "Success", "API key saved! OCR is now enabled.")

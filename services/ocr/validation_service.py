@@ -98,31 +98,44 @@ class OCRValidationService:
         ocr_id = ocr_item.get('id', '').strip().upper()
         ocr_name = ocr_item.get('name', '').strip().upper()
 
-        if not self._is_valid_id_format(ocr_id):
-            return OCRValidationResult(
-                ocr_id=ocr_id,
-                ocr_name=ocr_name,
-                status=OCRStatus.UNREADABLE,
-                validation_notes="Could not read a valid employee ID from this entry"
-            )
+        # Try ID-based matching first if ID format is valid
+        if self._is_valid_id_format(ocr_id):
+            matched_employee = self._find_exact_match(ocr_id, sheet_name=sheet_name)
+            if matched_employee:
+                return OCRValidationResult(
+                    ocr_id=ocr_id,
+                    ocr_name=ocr_name,
+                    status=OCRStatus.CONFIRMED,
+                    matched_employee=matched_employee,
+                    validation_notes=f"Matched by ID to {matched_employee.employee_id} - {matched_employee.name}"
+                )
+            else:
+                return OCRValidationResult(
+                    ocr_id=ocr_id,
+                    ocr_name=ocr_name,
+                    status=OCRStatus.UNMATCHED,
+                    validation_notes="Valid ID format but no matching employee found in active sheet"
+                )
 
-        matched_employee = self._find_exact_match(ocr_id, sheet_name=sheet_name)
+        # ID format invalid - try name-based fallback matching if we have a name
+        if ocr_name:
+            name_match = self._find_name_match(ocr_name, sheet_name=sheet_name)
+            if name_match:
+                return OCRValidationResult(
+                    ocr_id=ocr_id,
+                    ocr_name=ocr_name,
+                    status=OCRStatus.CONFIRMED,
+                    matched_employee=name_match,
+                    validation_notes=f"Matched by name to {name_match.employee_id} - {name_match.name} (ID was unreadable)"
+                )
 
-        if matched_employee:
-            return OCRValidationResult(
-                ocr_id=ocr_id,
-                ocr_name=ocr_name,
-                status=OCRStatus.CONFIRMED,
-                matched_employee=matched_employee,
-                validation_notes=f"Matched to {matched_employee.employee_id} - {matched_employee.name}"
-            )
-        else:
-            return OCRValidationResult(
-                ocr_id=ocr_id,
-                ocr_name=ocr_name,
-                status=OCRStatus.UNMATCHED,
-                validation_notes="Valid ID format but no matching employee found in active sheet"
-            )
+        # No valid ID and no name match - return unreadable
+        return OCRValidationResult(
+            ocr_id=ocr_id,
+            ocr_name=ocr_name,
+            status=OCRStatus.UNREADABLE,
+            validation_notes="Could not read a valid employee ID and name matching failed"
+        )
 
     def _is_valid_id_format(self, emp_id: str) -> bool:
         return bool(self.id_pattern.match(emp_id))
@@ -145,6 +158,61 @@ class OCRValidationService:
             return emp
         except Exception as e:
             logging.error(f"Database lookup failed for {emp_id}: {e}")
+            return None
+
+    def _find_name_match(self, ocr_name: str, sheet_name: Optional[str] = None) -> Optional[Employee]:
+        """Find employee by name with fuzzy matching, respecting sheet scope."""
+        try:
+            if sheet_name:
+                candidates = self.workbook_service.get_employees_by_sheet_as_objects(sheet_name)
+            else:
+                candidates = self.workbook_service.employees
+
+            if not candidates:
+                return None
+
+            best_match = None
+            best_score = 0
+
+            name_upper = ocr_name.upper()
+            
+            for emp in candidates:
+                emp_name = emp.name.upper() if emp.name else ""
+                
+                # Exact match
+                if emp_name == name_upper:
+                    score = 100
+                # Name contains the OCR name
+                elif name_upper in emp_name:
+                    score = 90
+                # Employee name contains OCR name
+                elif emp_name in name_upper:
+                    score = 85
+                else:
+                    # Fuzzy match
+                    score = fuzz.ratio(emp_name, name_upper)
+
+                # Only consider matches above 80% similarity for name fallback
+                if score >= 80 and score > best_score:
+                    best_match = emp
+                    best_score = score
+
+            if best_match:
+                logging.info(
+                    f"NAME_FALLBACK: matched '{ocr_name}' to "
+                    f"emp_id='{best_match.employee_id}' name='{best_match.name}' "
+                    f"sheet='{best_match.sheet_name}' score={best_score}"
+                )
+                return best_match
+            else:
+                logging.info(
+                    f"NAME_FALLBACK: no match found for '{ocr_name}' "
+                    f"in sheet='{sheet_name or 'ALL'}' candidates={len(candidates)}"
+                )
+                return None
+
+        except Exception as e:
+            logging.error(f"Name matching failed for '{ocr_name}': {e}")
             return None
 
     def find_possible_matches(self, ocr_id: str, ocr_name: str, sheet_name: str, limit: int = 5) -> List[Dict]:
@@ -279,12 +347,22 @@ class OCRValidationService:
 
         results = {}  # emp_id -> (employee, score)
 
-        # Step 1: Exact ID match (always, bypasses sheet filter for discovery)
+        # Step 1: Exact ID match (with sheet filter)
         try:
             exact = self.workbook_service.get_employee_as_object(q.upper())
             if exact:
-                results[exact.employee_id] = (exact, 100)
-                diagnostics["exact_match"] = exact.employee_id
+                # Apply sheet filter to exact match
+                if sheet_name and exact.sheet_name.upper() != sheet_name.upper():
+                    logging.info(
+                        f"CORRECTION_SEARCH: exact match filtered by sheet - "
+                        f"emp_id='{exact.employee_id}' emp_sheet='{exact.sheet_name}' "
+                        f"active_sheet='{sheet_name}'"
+                    )
+                    exact = None
+                
+                if exact:
+                    results[exact.employee_id] = (exact, 100)
+                    diagnostics["exact_match"] = exact.employee_id
         except Exception as e:
             logging.warning(f"CORRECTION_SEARCH: exact lookup error: {e}")
 
