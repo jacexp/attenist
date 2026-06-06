@@ -1160,6 +1160,8 @@ class OCRAttendanceTab(QWidget):
 
         self.process_button.setEnabled(True)
         self.browse_button.setEnabled(True)
+        self.model_combo.setEnabled(True)  # Unlock model after error
+        self.refresh_models_btn.setEnabled(True)
 
     def start_verification(self):
         if not self.validation_results:
