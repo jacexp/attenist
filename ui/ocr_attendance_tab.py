@@ -513,15 +513,17 @@ class VerificationWizard(QDialog):
 class VerificationSummaryDialog(QDialog):
     def __init__(self, workbook_name: str, sheet_name: str, images_count: int,
                  total: int, confirmed: int, corrected: int, skipped: int,
-                 shift: str, rows_to_mark: int, parent=None):
+                 shift: str, rows_to_mark: int,
+                 ready_results: List = None, parent=None):
         super().__init__(parent)
         self.rows_to_mark = rows_to_mark
+        self.ready_results = ready_results or []
         self.setup_ui(workbook_name, sheet_name, images_count, total, confirmed, corrected, skipped, shift)
 
     def setup_ui(self, workbook_name, sheet_name, images_count, total, confirmed, corrected, skipped, shift):
         self.setWindowTitle("Verification Summary")
         self.setModal(True)
-        self.resize(450, 350)
+        self.resize(520, 500)
 
         layout = QVBoxLayout()
 
@@ -548,6 +550,24 @@ class VerificationSummaryDialog(QDialog):
                 if line.startswith("Rows To Mark") or line.startswith("Shift"):
                     label.setFont(QFont("", 11, QFont.Bold))
                 layout.addWidget(label)
+
+        layout.addSpacing(8)
+
+        # Employee list header
+        emp_header = QLabel("Employees to be written:")
+        emp_header.setFont(QFont("", 10, QFont.Bold))
+        layout.addWidget(emp_header)
+
+        # Scrollable employee list
+        self.emp_list = QListWidget()
+        self.emp_list.setMaximumHeight(180)
+        for result in self.ready_results:
+            emp = result.matched_employee
+            if emp:
+                corrected_mark = " [CORRECTED]" if result.manually_corrected else ""
+                item_text = f"{emp.employee_id}  —  {emp.name}{corrected_mark}"
+                self.emp_list.addItem(item_text)
+        layout.addWidget(self.emp_list)
 
         layout.addStretch()
 
@@ -1205,6 +1225,7 @@ class OCRAttendanceTab(QWidget):
             skipped=skipped,
             shift=shift,
             rows_to_mark=len(ready_results),
+            ready_results=ready_results,
             parent=self
         )
 
