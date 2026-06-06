@@ -190,7 +190,7 @@ class MainWindow(QWidget):
             item = QListWidgetItem(
                 f"{emp.employee_id} - {emp.name} ({emp.sheet_name})"
             )
-            item.setData(32, emp)
+            item.setData(Qt.UserRole, emp)
             self.results_list.addItem(item)
         
         if self.results_list.count() == 1:

@@ -17,7 +17,8 @@ class ConfigManager:
         "gemini_provider": "google",
         "gemini_base_url": "",
         "gemini_model": "gemini-2.5-flash",
-        "app_version": "2.0.0"
+        "app_version": "2.0.0",
+        "verification_auto_advance": True,
     }
     
     def __init__(self, config_path: str = "config.json"):

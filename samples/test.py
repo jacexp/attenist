@@ -3,6 +3,7 @@ from workbook.indexes.employee import EmployeeIndexer
 from workbook.indexes.date import DateIndexer
 from services.search_service import SearchService
 from services.attendance_service import AttendanceService
+from services.workbook_service import WorkbookService
 
 
 def main():
@@ -26,7 +27,8 @@ def main():
         return
 
     # 4. Search Service
-    search_service = SearchService(employees)
+    workbook_service = WorkbookService(employees)
+    search_service = SearchService(workbook_service)
     
     # 5. Attendance Service
     attendance_service = AttendanceService(workbook, employees, dates)
@@ -50,7 +52,8 @@ def main():
     old_value = attendance_service.mark(
         employee,
         day,
-        shift
+        shift,
+        active_sheet_name=employee.sheet_name
     )
 
     print(f"Previous Value: {old_value}")

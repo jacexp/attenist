@@ -423,6 +423,7 @@ class VerificationWizard(QDialog):
                 self.accept_btn.setEnabled(False)
         else:
             self.match_group.setVisible(False)
+            self.no_match_label.setVisible(False)
             self.accept_btn.setEnabled(False)
 
     def show_live_preview(self, employee, status_text="Match Selected"):
@@ -1197,7 +1198,7 @@ class OCRAttendanceTab(QWidget):
         if not ready_results:
             QMessageBox.warning(self, "Nothing to Commit",
                               "No rows are ready for commit.\n\n" +
-                              "\n".join(warnings) if warnings else "")
+                              ("\n".join(warnings) if warnings else ""))
             return
 
         shift = self.shift_combo.currentText()

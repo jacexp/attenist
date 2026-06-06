@@ -157,7 +157,7 @@ class OCRValidationService:
                 )
             return emp
         except Exception as e:
-            logging.error(f"Database lookup failed for {emp_id}: {e}")
+            logging.error(f"Employee lookup failed for {emp_id}: {e}")
             return None
 
     def _find_name_match(self, ocr_name: str, sheet_name: Optional[str] = None) -> Optional[Employee]:
@@ -278,8 +278,6 @@ class OCRValidationService:
             result.is_checked = True
             result.checkbox_enabled = True
             return result
-
-        return result
 
         return result
 
