@@ -12,11 +12,18 @@ from typing import Optional, Dict, Any
 class ConfigManager:
     """Manages application configuration stored in config.json."""
     
+    SUPPORTED_MODELS = [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-flash-latest",
+        "gemini-pro",
+    ]
+
     DEFAULT_CONFIG = {
         "gemini_api_key": "",
         "gemini_provider": "google",
         "gemini_base_url": "",
-        "gemini_model": "gemini-flash-latest",
+        "gemini_model": "gemini-2.5-flash",
         "app_version": "2.0.0"
     }
     

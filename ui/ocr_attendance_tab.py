@@ -548,6 +548,28 @@ class OCRAttendanceTab(QWidget):
         self.active_sheet_label.setStyleSheet("color: #555; font-weight: bold;")
         header_layout.addWidget(self.active_sheet_label)
 
+        # Model selection row
+        model_layout = QHBoxLayout()
+        model_layout.addWidget(QLabel("Model:"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(config.SUPPORTED_MODELS)
+        current_model = config.get_gemini_model()
+        idx = self.model_combo.findText(current_model)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
+        model_layout.addWidget(self.model_combo)
+
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.clicked.connect(self._test_connection)
+        model_layout.addWidget(self.test_btn)
+
+        self.conn_status_label = QLabel("")
+        self.conn_status_label.setStyleSheet("font-size: 9pt;")
+        model_layout.addWidget(self.conn_status_label)
+        model_layout.addStretch()
+        header_layout.addLayout(model_layout)
+
         header_group.setLayout(header_layout)
         main_layout.addWidget(header_group)
 
@@ -656,7 +678,10 @@ class OCRAttendanceTab(QWidget):
 
         if config.has_valid_api_key():
             try:
-                self.ocr_service = OCRService(config.get_gemini_api_key())
+                self.ocr_service = OCRService(
+                    config.get_gemini_api_key(),
+                    model=self.model_combo.currentText() if hasattr(self, 'model_combo') else None
+                )
                 self.ocr_enabled = True
                 self.api_status_label.setText("Gemini API: Ready")
                 self.api_status_label.setStyleSheet("color: green;")
@@ -674,6 +699,39 @@ class OCRAttendanceTab(QWidget):
             self._enable_ocr_controls(False)
             self._add_configure_button()
             logging.info("OCR disabled: No API key configured")
+
+    def _on_model_changed(self, model_name: str):
+        config.set_gemini_model(model_name)
+        logging.info(f"Model changed to: {model_name}")
+        self.conn_status_label.setText("")
+        if self.ocr_service:
+            self.ocr_service = OCRService(
+                api_key=config.get_gemini_api_key(),
+                model=model_name
+            )
+
+    def _test_connection(self):
+        if not self.ocr_service:
+            QMessageBox.warning(self, "OCR Not Initialized",
+                                "OCR service is not available. Check API key.")
+            return
+        self.test_btn.setEnabled(False)
+        self.conn_status_label.setText("Testing...")
+        # Run test synchronously (fast operation, no thread needed)
+        result = self.ocr_service.test_connection(
+            model=self.model_combo.currentText()
+        )
+        self.test_btn.setEnabled(True)
+        if result["success"]:
+            self.conn_status_label.setText(
+                f"OK — {result['latency']:.1f}s — {result['model']}"
+            )
+            self.conn_status_label.setStyleSheet("color: green; font-size: 9pt;")
+        else:
+            self.conn_status_label.setText(
+                f"FAIL — {result.get('error', 'unknown error')}"
+            )
+            self.conn_status_label.setStyleSheet("color: red; font-size: 9pt;")
 
     def _enable_ocr_controls(self, enabled: bool):
         self.ocr_enabled = enabled

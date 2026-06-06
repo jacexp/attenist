@@ -7,6 +7,7 @@ from typing import List, Optional, Union, Dict, Any
 from pathlib import Path
 from PIL import Image
 import google.genai as genai
+from core.config import config
 from core.settings import settings
 
 
@@ -16,21 +17,27 @@ class GeminiClient:
     Supports Google's public endpoint and custom gateways (OpenRouter, LiteLLM, custom proxies).
     """
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None,
+                 model: Optional[str] = None,
+                 provider: Optional[str] = None,
+                 base_url: Optional[str] = None):
         """
         Initialize the Gemini client.
         
         Args:
-            api_key: API key for authentication. Defaults to settings.GEMINI_API_KEY.
+            api_key: API key. Falls back to config.json then env var.
+            model: Model name override. Falls back to config.json then env var.
+            provider: Provider name override. Falls back to config.json then env var.
+            base_url: Base URL override. Falls back to config.json then env var.
         """
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = api_key or config.get_gemini_api_key() or settings.GEMINI_API_KEY
         if not self.api_key:
-            logging.error("Gemini API Key is missing. Please set GOOGLE_API_KEY environment variable.")
+            logging.error("Gemini API Key is missing. Set in config.json or GOOGLE_API_KEY env var.")
             raise ValueError("Gemini API Key is required for OCR functionality.")
         
-        self.base_url = settings.get_base_url()
-        self.provider = settings.get_provider()
-        self.model_name = settings.get_model_name()
+        self.base_url = base_url or config.get_gemini_base_url() or settings.get_base_url()
+        self.provider = provider or config.get_gemini_provider() or settings.get_provider()
+        self.model_name = model or config.get_gemini_model() or settings.get_model_name()
         
         try:
             # Configure client with optional custom base URL for provider/gateway

@@ -131,7 +131,7 @@ class OCRValidationService:
         try:
             emp = self.database_service.get_employee_as_object(emp_id)
             if emp and sheet_name:
-                if emp.sheet_name != sheet_name:
+                if emp.sheet_name.upper() != sheet_name.upper():
                     logging.info(
                         f"SHEET_SCOPED: _find_exact_match rejected cross-sheet "
                         f"emp_id='{emp_id}' emp_sheet='{emp.sheet_name}' "
@@ -191,7 +191,7 @@ class OCRValidationService:
             return corrected_result
 
         elif selected_employee:
-            if sheet_name and selected_employee.sheet_name != sheet_name:
+            if sheet_name and selected_employee.sheet_name.upper() != sheet_name.upper():
                 logging.error(
                     f"SHEET_SCOPED: REJECTED cross-sheet correction "
                     f"employee={selected_employee.employee_id} "
@@ -210,6 +210,8 @@ class OCRValidationService:
             result.is_checked = True
             result.checkbox_enabled = True
             return result
+
+        return result
 
         return result
 

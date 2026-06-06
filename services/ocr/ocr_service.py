@@ -3,6 +3,7 @@ OCR Service for Gemini Vision API Integration
 Handles image upload, Gemini API calls, and JSON parsing for attendance extraction.
 """
 import json
+import time
 import logging
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
@@ -10,21 +11,27 @@ from PIL import Image
 import io
 
 from services.gemini_client import GeminiClient
-from core.settings import settings
+from core.config import config
 
 
 class OCRService:
     """Service for extracting attendance data from images using Gemini Vision."""
     
-    def __init__(self, api_key: str = None, discover_models: bool = True):
+    def __init__(self, api_key: str = None, discover_models: bool = True,
+                 model: Optional[str] = None,
+                 provider: Optional[str] = None,
+                 base_url: Optional[str] = None):
         """
         Initialize OCR Service with Gemini API.
-        
+
         Args:
-            api_key: Google AI API key. If None, expects GOOGLE_API_KEY environment variable.
-            discover_models: If True, attempt to discover available models from provider.
+            api_key: API key. Falls back to config.json then env var.
+            discover_models: If True, attempt to discover available models.
+            model: Model name override. Falls back to config.json then env var.
+            provider: Provider name override. Falls back to config.json then env var.
+            base_url: Base URL override. Falls back to config.json then env var.
         """
-        self.gemini_client = GeminiClient(api_key)
+        self.gemini_client = GeminiClient(api_key, model=model, provider=provider, base_url=base_url)
         
         # Attempt model discovery if enabled
         if discover_models:
@@ -62,15 +69,11 @@ Rules:
         try:
             available_models = self.gemini_client.list_models()
             if available_models:
-                # Log all available models
                 for model in available_models:
                     logging.info(f"Provider model available: {model}")
-                
-                # Check if current model is available
-                current_model = settings.get_model_name()
+                current_model = config.get_gemini_model()
                 if current_model not in available_models:
                     logging.warning(f"Configured model '{current_model}' not in available models list")
-                    logging.warning(f"Available models: {available_models}")
                 else:
                     logging.info(f"Configured model '{current_model}' is available")
             else:
@@ -255,21 +258,43 @@ Rules:
             logging.error(f"Response parsing failed: {e}")
             raise OCRServiceException(f"Failed to parse Gemini response: {e}")
     
-    def test_connection(self) -> bool:
+    def test_connection(self, model: Optional[str] = None,
+                        provider: Optional[str] = None,
+                        base_url: Optional[str] = None) -> Dict:
         """
-        Test Gemini API connection.
-        
+        Test Gemini API connection (optionally with a different model).
+
         Returns:
-            True if connection successful, False otherwise
+            Dict with keys: success (bool), latency (float seconds),
+            model (str), error (str or None)
         """
+        if model or provider or base_url:
+            client = GeminiClient(
+                api_key=self.gemini_client.api_key,
+                model=model, provider=provider, base_url=base_url
+            )
+        else:
+            client = self.gemini_client
+
+        test_model = model or config.get_gemini_model()
+        start = time.time()
         try:
-            # Simple test generation
-            response = self.gemini_client.generate_content("Test connection. Respond with 'OK'.")
-            return "OK" in response.upper()
-            
+            response = client.generate_content("Test connection. Respond with 'OK'.")
+            latency = time.time() - start
+            return {
+                "success": "OK" in response.upper(),
+                "latency": round(latency, 2),
+                "model": test_model,
+                "error": None,
+            }
         except Exception as e:
-            logging.error(f"Gemini API connection test failed: {e}")
-            return False
+            latency = time.time() - start
+            return {
+                "success": False,
+                "latency": round(latency, 2),
+                "model": test_model,
+                "error": str(e),
+            }
 
 
 class OCRServiceException(Exception):

@@ -249,11 +249,11 @@ class EmployeeRepository:
                     SELECT emp_id, emp_name, rank, sheet_name, row_number,
                            created_at, updated_at, synced_from_excel
                     FROM employees 
-                    WHERE (emp_id LIKE ? OR emp_name LIKE ?)
-                      AND sheet_name = ?
-                    ORDER BY emp_name
-                    LIMIT ?
-                """, (f"%{query}%", f"%{query}%", sheet_name, limit))
+                     WHERE (emp_id LIKE ? OR emp_name LIKE ?)
+                     AND UPPER(sheet_name) = UPPER(?)
+                     ORDER BY emp_name
+                     LIMIT ?
+                 """, (f"%{query}%", f"%{query}%", sheet_name, limit))
             else:
                 cursor.execute("""
                     SELECT emp_id, emp_name, rank, sheet_name, row_number,
@@ -317,12 +317,12 @@ class EmployeeRepository:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT emp_id, emp_name, rank, sheet_name, row_number,
-                       created_at, updated_at, synced_from_excel
-                FROM employees 
-                WHERE sheet_name = ?
-                ORDER BY row_number
-            """, (sheet_name,))
+                 SELECT emp_id, emp_name, rank, sheet_name, row_number,
+                        created_at, updated_at, synced_from_excel
+                 FROM employees 
+                 WHERE UPPER(sheet_name) = UPPER(?)
+                 ORDER BY row_number
+             """, (sheet_name,))
             
             results = []
             for row in cursor.fetchall():

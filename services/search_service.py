@@ -43,7 +43,7 @@ class SearchService:
                 
                 # Sheet filter safeguard: double-check no cross-sheet results
                 if sheet_name:
-                    employee_objects = [emp for emp in employee_objects if emp.sheet_name == sheet_name]
+                    employee_objects = [emp for emp in employee_objects if emp.sheet_name.upper() == sheet_name.upper()]
                 
                 # Return in expected format
                 results = []
@@ -93,12 +93,13 @@ class SearchService:
                     emp_obj = self.database_service.get_employee_as_object(db_emp["emp_id"])
                     if emp_obj:
                         # Double-check sheet scope
-                        if sheet_name and emp_obj.sheet_name != sheet_name:
+                        if sheet_name and emp_obj.sheet_name.upper() != sheet_name.upper():
                             continue
                         employee_objects.append(emp_obj)
                         # Build maps for fuzzy search
                         by_id.setdefault(emp_obj.employee_id.upper(), []).append(emp_obj)
                         names_map.setdefault(emp_obj.name.upper(), []).append(emp_obj)
+
                 
                 # Apply original fuzzy search logic
                 return self._fuzzy_search(query.upper(), by_id, names_map, employee_objects, limit)
