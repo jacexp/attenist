@@ -213,63 +213,94 @@ class OCRValidationService:
 
         return result
 
-    def _score_employees(self, query: str, employees: List[Employee]) -> List[Dict]:
+    def _score_employees(self, query: str, employees: List[Employee], diagnostics: Dict = None) -> List[Dict]:
         q = query.strip().upper()
         if not q:
             return [{"employee": e, "score": 0} for e in employees]
 
         scored = []
         for emp in employees:
-            eid = emp.employee_id.upper()
-            name = emp.name.upper()
+            try:
+                eid = emp.employee_id.upper() if emp.employee_id else ""
+                name = emp.name.upper() if emp.name else ""
 
-            if eid == q:
-                score = 100
-            elif name == q:
-                score = 95
-            elif eid.startswith(q):
-                score = 90
-            elif name.startswith(q):
-                score = 85
-            elif q in eid:
-                score = 80
-            elif q in name:
-                score = 75
-            else:
-                id_ratio = fuzz.ratio(eid, q)
-                name_ratio = fuzz.partial_ratio(name, q)
-                score = max(id_ratio, name_ratio)
-                if score < 40:
-                    continue
+                if eid == q:
+                    score = 100
+                elif name == q:
+                    score = 95
+                elif eid.startswith(q):
+                    score = 90
+                elif name.startswith(q):
+                    score = 85
+                elif q in eid:
+                    score = 80
+                elif q in name:
+                    score = 75
+                else:
+                    id_ratio = fuzz.ratio(eid, q)
+                    name_ratio = fuzz.partial_ratio(name, q)
+                    score = max(id_ratio, name_ratio)
+                    if score < 20:
+                        if diagnostics is not None:
+                            diagnostics["filtered_by_score"] += 1
+                            diagnostics["dropped"].append(
+                                f"emp_id={emp.employee_id} name='{emp.name}' "
+                                f"sheet='{emp.sheet_name}' score={score:.1f}"
+                            )
+                        continue
 
-            scored.append({"employee": emp, "score": score})
+                scored.append({"employee": emp, "score": score})
+            except Exception as e:
+                logging.warning(
+                    f"CORRECTION_SEARCH: score error for {emp.employee_id}: {e}"
+                )
+                continue
 
         return scored
 
     def search_employees_for_manual_match(self, query: str, sheet_name: Optional[str] = None, limit: int = 100) -> List[Employee]:
         try:
-            if sheet_name:
-                raw = self.database_service.get_employees_by_sheet_as_objects(sheet_name)
-                logging.info(
-                    f"SHEET_SCOPED: search_employees_for_manual_match "
-                    f"query='{query}' active_sheet='{sheet_name}' "
-                    f"sheet_employees={len(raw)}"
-                )
-            else:
-                raw = self.database_service.search_employees_as_objects(query, 500)
+            db_limit = limit * 3
+            raw = self.database_service.search_employees_as_objects(
+                query, db_limit, sheet_name=sheet_name
+            )
 
-            scored = self._score_employees(query, raw)
+            diagnostics = {
+                "query": query,
+                "sheet_name": sheet_name,
+                "db_matches": len(raw),
+                "returned": 0,
+                "displayed": 0,
+                "filtered_by_score": 0,
+                "filtered_by_sheet": 0,
+                "truncated_by_limit": 0,
+                "dropped": [],
+            }
+
+            scored = self._score_employees(query, raw, diagnostics)
             scored.sort(key=lambda x: x["score"], reverse=True)
-            top = [s["employee"] for s in scored[:limit]]
+
+            diagnostics["returned"] = len(scored)
+            top = scored[:limit]
+            diagnostics["displayed"] = len(top)
+            diagnostics["truncated_by_limit"] = max(0, len(scored) - limit)
+
+            # Log all dropped employees
+            for emp_log in diagnostics["dropped"]:
+                logging.info(f"CORRECTION_SEARCH: DROPPED {emp_log}")
 
             logging.info(
-                f"MATCH_SEARCH: search_employees_for_manual_match "
-                f"query='{query}' sheet='{sheet_name}' "
-                f"db_matches={len(raw)} scored={len(scored)} displayed={len(top)}"
+                f"CORRECTION_SEARCH: "
+                f"query='{query}' sheet='{sheet_name or 'ALL'}' "
+                f"db_matches={diagnostics['db_matches']} "
+                f"scored={diagnostics['returned']} "
+                f"displayed={diagnostics['displayed']} "
+                f"truncated={diagnostics['truncated_by_limit']} "
+                f"filtered_by_score={diagnostics['filtered_by_score']}"
             )
-            return top
+            return [s["employee"] for s in top]
         except Exception as e:
-            logging.error(f"Employee search failed for query '{query}': {e}")
+            logging.error(f"CORRECTION_SEARCH: ERROR query='{query}': {e}")
             return []
 
     def get_validation_statistics(self) -> Dict:

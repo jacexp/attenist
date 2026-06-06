@@ -82,33 +82,66 @@ class EmployeeSearchDialog(QDialog):
     def setup_ui(self):
         self.setWindowTitle("Search Employee — Correction")
         self.setModal(True)
-        self.resize(650, 500)
+        self.resize(780, 550)
 
         layout = QVBoxLayout()
 
+        # Sheet scope toggle
+        scope_layout = QHBoxLayout()
+        self.scope_toggle = QCheckBox("Active Sheet Only")
+        self.scope_toggle.setChecked(True)
+        self.scope_toggle.toggled.connect(self._on_scope_toggled)
+        scope_layout.addWidget(self.scope_toggle)
+
+        self.scope_label = QLabel(f"Sheet: {self.sheet_name}")
+        self.scope_label.setStyleSheet("color: #666; font-style: italic;")
+        scope_layout.addWidget(self.scope_label)
+        scope_layout.addStretch()
+        layout.addLayout(scope_layout)
+
+        # Search input
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Search:"))
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Type employee ID or name (min 1 character)")
+        self.search_input.setPlaceholderText("Type employee ID or name")
         self.search_input.textChanged.connect(self.perform_search)
         search_layout.addWidget(self.search_input)
         layout.addLayout(search_layout)
 
+        # Count label
         self.count_label = QLabel("")
         self.count_label.setStyleSheet("color: #666; font-size: 9pt; margin-bottom: 2px;")
         layout.addWidget(self.count_label)
 
+        # Results header
+        header_label = QLabel(
+            "  EMP ID   |  NAME                       |  SHEET          |  RANK"
+        )
+        header_label.setStyleSheet(
+            "font-weight: bold; color: #333; padding: 2px 4px;"
+        )
+        layout.addWidget(header_label)
+
+        # Results list
         self.results_list = QListWidget()
         self.results_list.setAlternatingRowColors(True)
         self.results_list.itemDoubleClicked.connect(self.select_employee)
         layout.addWidget(self.results_list)
 
+        # Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.select_employee)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
         self.setLayout(layout)
+
+    def _on_scope_toggled(self, active_only: bool):
+        if active_only:
+            self.scope_label.setText(f"Sheet: {self.sheet_name}")
+        else:
+            self.scope_label.setText("Showing all sheets")
+        self.perform_search(self.search_input.text())
 
     def perform_search(self, query: str):
         self.results_list.clear()
@@ -117,36 +150,73 @@ class EmployeeSearchDialog(QDialog):
         if len(query) < 1:
             return
 
+        current_sheet = self.sheet_name if self.scope_toggle.isChecked() else None
+
         try:
             employees = self.validation_service.search_employees_for_manual_match(
-                query, sheet_name=self.sheet_name, limit=100
+                query, sheet_name=current_sheet, limit=100
             )
 
-            self.count_label.setText(f"Results: {len(employees)}")
+            results_text = f"Results: {len(employees)}"
+            if not self.scope_toggle.isChecked():
+                results_text += " (all sheets)"
+            self.count_label.setText(results_text)
 
-            for emp in employees:
-                item_text = f"{emp.employee_id:8s} | {emp.name:25s} | {emp.sheet_name or '':12s}"
+            # Auto-select first row for quick Enter key acceptance
+            first_row = 0
+            for i, emp in enumerate(employees):
+                rank_text = emp.rank or ""
+                item_text = (
+                    f"  {emp.employee_id:8s} | {emp.name:28s} | "
+                    f"{(emp.sheet_name or ''):14s} | {rank_text}"
+                )
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, emp)
                 self.results_list.addItem(item)
 
+            if employees:
+                self.results_list.setCurrentRow(0)
+
             logging.info(
-                f"SHEET_SCOPED: EmployeeSearchDialog display "
-                f"active_sheet='{self.sheet_name}' "
-                f"query='{query}' matches_returned={len(employees)} "
-                f"all_same_sheet={all(e.sheet_name == self.sheet_name for e in employees) if employees else 'N/A'}"
+                f"CORRECTION_SEARCH: UI "
+                f"query='{query}' active_sheet='{self.sheet_name}' "
+                f"mode={'active' if self.scope_toggle.isChecked() else 'all'} "
+                f"returned={len(employees)}"
             )
 
         except Exception as e:
-            logging.error(f"Employee search failed: {e}")
+            logging.error(f"CORRECTION_SEARCH: UI error query='{query}': {e}")
 
     def select_employee(self):
         current_item = self.results_list.currentItem()
         if current_item:
-            self.selected_employee = current_item.data(Qt.UserRole)
+            emp = current_item.data(Qt.UserRole)
+            # Hard safety: verify sheet before applying
+            if self.scope_toggle.isChecked() and self.sheet_name:
+                if emp.sheet_name != self.sheet_name:
+                    QMessageBox.warning(
+                        self,
+                        "Sheet Mismatch",
+                        f"Employee does not belong to the active worksheet.\n\n"
+                        f"Employee '{emp.employee_id}' is in sheet '{emp.sheet_name}', "
+                        f"but active sheet is '{self.sheet_name}'.\n\n"
+                        f"Switch to 'All Sheets' mode to select cross-sheet employees."
+                    )
+                    return
+            self.selected_employee = emp
             self.accept()
         else:
-            QMessageBox.warning(self, "No Selection", "Please select an employee from the list.")
+            QMessageBox.warning(
+                self, "No Selection",
+                "Please select an employee from the list."
+            )
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if self.results_list.currentItem():
+                self.select_employee()
+                return
+        super().keyPressEvent(event)
 
 
 class VerificationWizard(QDialog):
