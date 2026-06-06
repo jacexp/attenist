@@ -20,13 +20,13 @@ from PySide6.QtWidgets import (
 )
 
 from services.search_service import SearchService
+from services.workbook_service import WorkbookService
 from services.attendance_service import AttendanceService
-from ui.employee_management_tab import EmployeeManagementTab
 from ui.ocr_attendance_tab import OCRAttendanceTab
 
 
 class MainWindow(QWidget):
-    def __init__(self, workbook, employees, dates, database_service, workbook_path):
+    def __init__(self, workbook, employees, dates, workbook_path):
         super().__init__()
 
         self.setWindowTitle("Attenist")
@@ -34,11 +34,11 @@ class MainWindow(QWidget):
         self.workbook = workbook
         self.employees = employees
         self.dates = dates
-        self.database_service = database_service
+
+        self.workbook_service = WorkbookService(employees)
 
         self.search_service = SearchService(
-            employees=self.employees,
-            database_service=self.database_service
+            workbook_service=self.workbook_service
         )
 
         self.attendance_service = AttendanceService(
@@ -87,13 +87,9 @@ class MainWindow(QWidget):
         self.build_attendance_ui(attendance_tab)
         self.tab_widget.addTab(attendance_tab, "Attendance")
         
-        # Employee Management tab
-        self.employee_mgmt_tab = EmployeeManagementTab(self.database_service)
-        self.tab_widget.addTab(self.employee_mgmt_tab, "Employee Management")
-        
         # OCR Attendance tab (uses config.json for API key)
         self.ocr_attendance_tab = OCRAttendanceTab(
-            self.database_service, 
+            self.workbook_service, 
             self.attendance_service,
             main_window=self
         )

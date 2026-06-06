@@ -11,7 +11,6 @@ from workbook.loader import WorkbookLoader
 from workbook.indexes.employee import EmployeeIndexer
 from workbook.indexes.date import DateIndexer
 
-from database.database_service import DatabaseService
 from core.config import config
 
 logging.basicConfig(
@@ -42,10 +41,10 @@ def main():
 
     try:
         # Stage 1: Load configuration
-        splash.update(5, "Loading configuration...")
+        splash.update(10, "Loading configuration...")
 
         # Stage 2: Load workbook
-        splash.update(10, "Opening workbook...")
+        splash.update(20, "Opening workbook...")
         splash.set_workbook_name(os.path.basename(file_path))
         QApplication.processEvents()
 
@@ -62,12 +61,12 @@ def main():
             return
 
         # Stage 3: Build employee index
-        splash.update(30, "Building employee index...")
+        splash.update(40, "Building employee index...")
         QApplication.processEvents()
         employees = EmployeeIndexer().build(workbook)
 
         # Stage 4: Build date index
-        splash.update(45, "Building date index...")
+        splash.update(55, "Building date index...")
         QApplication.processEvents()
         dates = {}
         for sheet in workbook.worksheets:
@@ -86,33 +85,8 @@ def main():
             )
             return
 
-        # Stage 5: Database connection
-        splash.update(60, "Connecting SQLite database...")
-        QApplication.processEvents()
-        database_service = DatabaseService()
-
-        # Stage 6: Sync employees to database
-        splash.update(70, "Syncing employees to database...")
-        QApplication.processEvents()
-
-        try:
-            stats = database_service.sync_employees_from_workbook(employees)
-            logging.info(
-                f"Employee sync complete: {stats['inserted']} inserted, "
-                f"{stats['updated']} updated, {stats['errors']} errors, "
-                f"{stats['total_scanned']} total scanned"
-            )
-            if stats["errors"] > 0:
-                splash.show_warning(
-                    f"Database sync: {stats['errors']} errors, "
-                    f"{stats['inserted'] + stats['updated']} OK"
-                )
-        except Exception as e:
-            logging.error(f"Employee database sync failed: {e}")
-            splash.show_warning(f"Database sync failed: {e}")
-
-        # Stage 7: OCR services check
-        splash.update(85, "Checking OCR services...")
+        # Stage 5: OCR services check
+        splash.update(70, "Checking OCR services...")
         QApplication.processEvents()
 
         if not config.has_valid_api_key():
@@ -120,15 +94,14 @@ def main():
                 "Gemini API key not configured — OCR features will be disabled."
             )
 
-        # Stage 8: Build MainWindow (UI-only, no heavy loading)
-        splash.update(95, "Loading UI components...")
+        # Stage 6: Build MainWindow (in-memory index, no SQLite)
+        splash.update(90, "Loading UI components...")
         QApplication.processEvents()
 
         window = MainWindow(
             workbook=workbook,
             employees=employees,
             dates=dates,
-            database_service=database_service,
             workbook_path=file_path,
         )
 

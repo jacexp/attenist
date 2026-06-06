@@ -13,7 +13,6 @@ class Settings:
     GEMINI_API_KEY = os.getenv('GOOGLE_API_KEY', '')
 
     # Application Paths
-    DB_PATH = "employees.db"
     LOG_FILE = "attenist.log"
 
     @classmethod

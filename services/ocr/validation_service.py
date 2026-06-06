@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 from rapidfuzz import process, fuzz
-from database.database_service import DatabaseService
+from services.workbook_service import WorkbookService
 from core.models import Employee
 
 
@@ -54,8 +54,8 @@ class OCRValidationResult:
 
 
 class OCRValidationService:
-    def __init__(self, database_service: DatabaseService):
-        self.database_service = database_service
+    def __init__(self, workbook_service: WorkbookService):
+        self.workbook_service = workbook_service
         self.id_pattern = re.compile(r'^[A-Z]{1,4}\d{2,5}$')
 
         self.validation_stats = {
@@ -129,7 +129,7 @@ class OCRValidationService:
 
     def _find_exact_match(self, emp_id: str, sheet_name: Optional[str] = None) -> Optional[Employee]:
         try:
-            emp = self.database_service.get_employee_as_object(emp_id)
+            emp = self.workbook_service.get_employee_as_object(emp_id)
             if emp and sheet_name:
                 if emp.sheet_name.upper() != sheet_name.upper():
                     logging.info(
@@ -149,7 +149,7 @@ class OCRValidationService:
 
     def find_possible_matches(self, ocr_id: str, ocr_name: str, sheet_name: str, limit: int = 5) -> List[Dict]:
         try:
-            sheet_emps = self.database_service.get_employees_by_sheet_as_objects(sheet_name)
+            sheet_emps = self.workbook_service.get_employees_by_sheet_as_objects(sheet_name)
 
             if not sheet_emps:
                 return []
@@ -281,7 +281,7 @@ class OCRValidationService:
 
         # Step 1: Exact ID match (always, bypasses sheet filter for discovery)
         try:
-            exact = self.database_service.get_employee_as_object(q.upper())
+            exact = self.workbook_service.get_employee_as_object(q.upper())
             if exact:
                 results[exact.employee_id] = (exact, 100)
                 diagnostics["exact_match"] = exact.employee_id
@@ -291,7 +291,7 @@ class OCRValidationService:
         # Step 2: SQL LIKE search (broad, sheet-filtered)
         try:
             db_limit = limit * 3
-            raw = self.database_service.search_employees_as_objects(
+            raw = self.workbook_service.search_employees_as_objects(
                 q, db_limit, sheet_name=sheet_name
             )
             diagnostics["like_matches"] = len(raw)

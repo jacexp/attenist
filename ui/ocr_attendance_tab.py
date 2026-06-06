@@ -15,7 +15,7 @@ from PySide6.QtGui import QFont
 
 from services.ocr.ocr_service import OCRService, OCRServiceException
 from services.ocr.validation_service import OCRValidationService, OCRValidationResult, OCRStatus
-from database.database_service import DatabaseService
+from services.workbook_service import WorkbookService
 from core.models import Employee
 from services.attendance_service import AttendanceService
 from core.config import config
@@ -501,15 +501,15 @@ class PostCommitSummaryDialog(QDialog):
 
 
 class OCRAttendanceTab(QWidget):
-    def __init__(self, database_service: DatabaseService, attendance_service: AttendanceService,
+    def __init__(self, workbook_service: WorkbookService, attendance_service: AttendanceService,
                  main_window=None):
         super().__init__()
-        self.database_service = database_service
+        self.workbook_service = workbook_service
         self.attendance_service = attendance_service
         self.main_window = main_window
 
         self.ocr_service = None
-        self.validation_service = OCRValidationService(database_service)
+        self.validation_service = OCRValidationService(workbook_service)
 
         self.validation_results: List[OCRValidationResult] = []
         self.current_images: List[str] = []

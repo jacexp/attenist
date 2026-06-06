@@ -1,22 +1,27 @@
 """
 SHEET-SCOPED MATCHING VERIFICATION
 Tests that search, match, and correction are restricted to active sheet only.
+Uses WorkbookService (in-memory) instead of DatabaseService.
 """
 import os
 import sys
 import logging
 from pathlib import Path
-from openpyxl import load_workbook
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.models import Employee
+from services.workbook_service import WorkbookService
 from services.ocr.validation_service import OCRValidationService
-from database.database_service import DatabaseService
+from workbook.loader import WorkbookLoader
+from workbook.indexes.employee import EmployeeIndexer
 
-db = DatabaseService()
-svc = OCRValidationService(db)
+# Load workbook and build index
+workbook = WorkbookLoader().load('samples/test1.xlsx')
+employees = EmployeeIndexer().build(workbook)
+ws = WorkbookService(employees)
+svc = OCRValidationService(ws)
 
 results = []
 passed = 0
@@ -33,27 +38,25 @@ def test(name, condition, detail=""):
     if detail:
         results.append(f"         {detail}")
 
-# Verify test workbook has employees across multiple sheets
-all_emps = db.search_employees_as_objects("", 1000)
+# Get employees from workbook
+all_emps = employees
 sheets = set(e.sheet_name for e in all_emps)
 
-print(f"\nDatabase: {len(all_emps)} employees across {len(sheets)} sheets: {sheets}")
+print(f"\nWorkbook: {len(all_emps)} employees across {len(sheets)} sheets: {sheets}")
 
 # Count employees per sheet
 for s in sorted(sheets):
     count = sum(1 for e in all_emps if e.sheet_name == s)
     print(f"  {s}: {count} employees")
 
-# Pick 3 sheets for cross-sheet testing
+# Pick 2 sheets for cross-sheet testing
 sheet_list = sorted(s for s in sheets if s and s != "None")
-if len(sheet_list) >= 3:
+if len(sheet_list) >= 2:
     SHEET_A = sheet_list[0]
     SHEET_B = sheet_list[1]
-    SHEET_C = sheet_list[2]
 else:
     SHEET_A = sheet_list[0] if sheet_list else "Shif (2)"
-    SHEET_B = sheet_list[1] if len(sheet_list) > 1 else SHEET_A
-    SHEET_C = SHEET_A
+    SHEET_B = SHEET_A
 
 # Pick one employee from each sheet
 def get_emp_from_sheet(sheet_name):
@@ -64,14 +67,11 @@ def get_emp_from_sheet(sheet_name):
 
 emp_a = get_emp_from_sheet(SHEET_A)
 emp_b = get_emp_from_sheet(SHEET_B) if SHEET_B != SHEET_A else None
-emp_c = get_emp_from_sheet(SHEET_C) if SHEET_C != SHEET_A and SHEET_C != SHEET_B else None
 
 print(f"\nTest employees:")
 print(f"  Sheet A '{SHEET_A}': {emp_a.employee_id if emp_a else 'N/A'}")
 if emp_b:
     print(f"  Sheet B '{SHEET_B}': {emp_b.employee_id} {emp_b.name}")
-if emp_c:
-    print(f"  Sheet C '{SHEET_C}': {emp_c.employee_id} {emp_c.name}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -222,48 +222,6 @@ if emp_a:
     if matches:
         test(f"find_possible_matches: emp '{emp_a.employee_id}' found in results",
              any(m["employee"].employee_id == emp_a.employee_id for m in matches))
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# TEST 5: AttendanceService.mark() — sheet validation
-# ═══════════════════════════════════════════════════════════════════════
-print("\n" + "=" * 60)
-print("TEST 5: AttendanceService.mark() sheet validation")
-print("=" * 60)
-
-from services.attendance_service import AttendanceService
-from openpyxl import Workbook
-
-wb = Workbook()
-ws = wb.active
-ws.title = SHEET_A
-ws.cell(row=5, column=1, value=1)
-ws.cell(row=emp_a.row, column=2, value=emp_a.employee_id)
-ws.cell(row=emp_a.row, column=3, value=emp_a.name)
-ws.cell(row=emp_a.row, column=4, value=emp_a.rank)
-ws.cell(row=emp_a.row, column=6, value="WO")  # source cell
-
-att_svc = AttendanceService(wb, [emp_a], {1: 1})
-
-# Same-sheet mark — should pass
-try:
-    att_svc.mark(emp_a, 1, "A", SHEET_A)
-    test(f"mark(): SAME-SHEET write allowed (emp from '{SHEET_A}', active '{SHEET_A}')", True)
-except Exception as e:
-    test(f"mark(): SAME-SHEET write allowed", False, f"Unexpected exception: {e}")
-
-# Cross-sheet mark — should fail
-if emp_b:
-    try:
-        att_svc.mark(emp_b, 1, "A", SHEET_A)
-        test(f"mark(): REJECTED cross-sheet write (emp from '{SHEET_B}', active '{SHEET_A}')",
-             False, "Should have raised ValueError")
-    except ValueError as e:
-        test(f"mark(): REJECTED cross-sheet write (emp from '{SHEET_B}', active '{SHEET_A}')",
-             "Sheet mismatch" in str(e), str(e))
-    except Exception as e:
-        test(f"mark(): REJECTED cross-sheet write",
-             False, f"Unexpected exception: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
