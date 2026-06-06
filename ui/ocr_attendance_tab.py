@@ -588,14 +588,16 @@ class VerificationSummaryDialog(QDialog):
 
 
 class PostCommitSummaryDialog(QDialog):
-    def __init__(self, written: int, overwrites: int, skipped: int, errors: int, parent=None):
+    def __init__(self, written: int, overwrites: int, skipped: int, errors: int,
+                 failed_records: List[Dict] = None, parent=None):
         super().__init__(parent)
+        self.failed_records = failed_records or []
         self.setup_ui(written, overwrites, skipped, errors)
 
     def setup_ui(self, written, overwrites, skipped, errors):
         self.setWindowTitle("Commit Results")
         self.setModal(True)
-        self.resize(400, 280)
+        self.resize(520, 400)
 
         layout = QVBoxLayout()
 
@@ -624,6 +626,27 @@ class PostCommitSummaryDialog(QDialog):
             row.addWidget(val)
             row.addStretch()
             layout.addLayout(row)
+
+        # Show first 5 failure details if errors occurred
+        if errors > 0 and self.failed_records:
+            layout.addSpacing(8)
+            fail_header = QLabel("First Failure Details:")
+            fail_header.setFont(QFont("", 10, QFont.Bold))
+            fail_header.setStyleSheet("color: red;")
+            layout.addWidget(fail_header)
+
+            detail_text = QTextEdit()
+            detail_text.setReadOnly(True)
+            detail_text.setMaximumHeight(160)
+
+            for i, rec in enumerate(self.failed_records[:5], 1):
+                detail_text.append(
+                    f"#{i}: {rec.get('employee_id', 'N/A')} - {rec.get('employee_name', 'N/A')}\n"
+                    f"    Sheet: {rec.get('employee_sheet', 'N/A')} → Active: {rec.get('active_sheet', 'N/A')}\n"
+                    f"    Error: {rec.get('exception_type', 'Unknown')}: {rec.get('exception_message', 'N/A')}\n"
+                )
+
+            layout.addWidget(detail_text)
 
         layout.addStretch()
 
@@ -862,7 +885,8 @@ class OCRAttendanceTab(QWidget):
         if self.ocr_service:
             self.ocr_service = OCRService(
                 api_key=config.get_gemini_api_key(),
-                model=actual
+                model=actual,
+                discover_models=False  # Skip discovery during model change
             )
 
     def _refresh_models(self):
@@ -1091,6 +1115,8 @@ class OCRAttendanceTab(QWidget):
 
         self.process_button.setEnabled(False)
         self.browse_button.setEnabled(False)
+        self.model_combo.setEnabled(False)  # Lock model during processing
+        self.refresh_models_btn.setEnabled(False)
 
         self.ocr_thread = OCRProcessingThread(
             self.current_images,
@@ -1119,6 +1145,8 @@ class OCRAttendanceTab(QWidget):
 
         self.process_button.setEnabled(True)
         self.browse_button.setEnabled(True)
+        self.model_combo.setEnabled(True)  # Unlock model after processing
+        self.refresh_models_btn.setEnabled(True)
 
         self.verify_button.setEnabled(True)
         self.verify_status_label.setText(f"{len(validation_results)} records extracted. Click to review.")
@@ -1206,6 +1234,13 @@ class OCRAttendanceTab(QWidget):
             self.verify_status_label.setText("No confirmed records ready for commit")
 
     def commit_to_excel(self):
+        logging.info("=== COMMIT FLOW START ===")
+        logging.info(f"Current model: {self.model_combo.currentText()}")
+        idx = self.model_combo.currentIndex()
+        if idx >= 0:
+            supports_vision = self.model_combo.itemData(idx, Qt.UserRole + 1)
+            logging.info(f"Model supports vision: {supports_vision}")
+        
         ready_results, warnings = self.validation_service.validate_commit_readiness(
             self.validation_results
         )
@@ -1261,9 +1296,9 @@ class OCRAttendanceTab(QWidget):
         if reply != QMessageBox.Yes:
             return
 
-        self._perform_commit(ready_results, day, shift)
+        self._perform_commit(ready_results, day, shift, active_sheet)
 
-    def _perform_commit(self, ready_results: List[OCRValidationResult], day: int, shift: str):
+    def _perform_commit(self, ready_results: List[OCRValidationResult], day: int, shift: str, active_sheet: str):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.status_label.setVisible(True)
@@ -1271,13 +1306,14 @@ class OCRAttendanceTab(QWidget):
 
         self.save_button.setEnabled(False)
         self.verify_button.setEnabled(False)
+        self.model_combo.setEnabled(False)  # Lock model during commit
+        self.refresh_models_btn.setEnabled(False)
 
         total = len(ready_results)
         success_count = 0
         overwrite_count = 0
         error_count = 0
-
-        active_sheet = self.main_window.active_sheet_name if self.main_window else None
+        failed_records = []  # Collect detailed failure info
 
         for i, result in enumerate(ready_results):
             try:
@@ -1298,13 +1334,66 @@ class OCRAttendanceTab(QWidget):
 
             except Exception as e:
                 error_count += 1
-                logging.error(f"Failed to commit {result.ocr_id}: {e}")
+                
+                # Capture comprehensive failure details
+                emp = result.matched_employee
+                failure_detail = {
+                    'employee_id': emp.employee_id if emp else 'N/A',
+                    'employee_name': emp.name if emp else 'N/A',
+                    'employee_sheet': emp.sheet_name if emp else 'N/A',
+                    'active_sheet': active_sheet or 'N/A',
+                    'target_day': day,
+                    'target_shift': shift,
+                    'target_row': emp.row if emp else 'N/A',
+                    'target_column': self.attendance_service.dates.get(day, 'N/A') if hasattr(self.attendance_service, 'dates') else 'N/A',
+                    'exception_type': type(e).__name__,
+                    'exception_message': str(e),
+                    'ocr_id': result.ocr_id,
+                    'ocr_name': result.ocr_name
+                }
+                failed_records.append(failure_detail)
+                
+                # Detailed logging
+                logging.error(f"=== COMMIT FAILURE #{error_count} ===")
+                logging.error(f"Employee ID: {failure_detail['employee_id']}")
+                logging.error(f"Employee Name: {failure_detail['employee_name']}")
+                logging.error(f"Employee Sheet: {failure_detail['employee_sheet']}")
+                logging.error(f"Active Sheet: {failure_detail['active_sheet']}")
+                logging.error(f"Target Day: {failure_detail['target_day']}")
+                logging.error(f"Target Shift: {failure_detail['target_shift']}")
+                logging.error(f"Target Row: {failure_detail['target_row']}")
+                logging.error(f"Target Column: {failure_detail['target_column']}")
+                logging.error(f"Exception: {failure_detail['exception_type']}: {failure_detail['exception_message']}")
+                logging.error(f"OCR Data: ID={failure_detail['ocr_id']}, Name={failure_detail['ocr_name']}")
+                
+                import traceback
+                logging.error(f"Traceback:\n{traceback.format_exc()}")
 
         self.progress_bar.setVisible(False)
         self.status_label.setVisible(False)
 
         self.save_button.setEnabled(True)
         self.verify_button.setEnabled(True)
+        self.model_combo.setEnabled(True)  # Unlock model after commit
+        self.refresh_models_btn.setEnabled(True)
+
+        # Generate failure report if errors occurred
+        if error_count > 0:
+            self._generate_commit_failure_report(failed_records, success_count, error_count, total)
+            
+            # Show detailed error message for critical failures
+            if success_count == 0:
+                first_failure = failed_records[0] if failed_records else {}
+                QMessageBox.critical(
+                    self, "Critical Commit Failure",
+                    f"All {total} records failed to write!\n\n"
+                    f"First Failure:\n"
+                    f"Employee: {first_failure.get('employee_id', 'N/A')} - {first_failure.get('employee_name', 'N/A')}\n"
+                    f"Error: {first_failure.get('exception_type', 'Unknown')}: {first_failure.get('exception_message', 'N/A')}\n\n"
+                    f"A detailed failure report has been saved to:\n"
+                    f"COMMIT_FAILURE_REPORT.md\n\n"
+                    f"Check the log file for full details."
+                )
 
         # Auto-save workbook after commit
         try:
@@ -1323,6 +1412,7 @@ class OCRAttendanceTab(QWidget):
             overwrites=overwrite_count,
             skipped=skipped,
             errors=error_count,
+            failed_records=failed_records,
             parent=self
         )
         dialog.exec()
@@ -1330,6 +1420,102 @@ class OCRAttendanceTab(QWidget):
         self.validation_results = [r for r in self.validation_results if r not in ready_results]
         self.update_statistics()
         self.update_commit_readiness()
+
+    def _generate_commit_failure_report(self, failed_records: List[Dict], success_count: int, error_count: int, total: int):
+        """Generate detailed commit failure report."""
+        from datetime import datetime
+        
+        report_path = Path("COMMIT_FAILURE_REPORT.md")
+        
+        with open(report_path, 'w') as f:
+            f.write("# Commit Failure Report\n\n")
+            f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            f.write(f"## Summary\n\n")
+            f.write(f"- **Total Records:** {total}\n")
+            f.write(f"- **Successfully Written:** {success_count}\n")
+            f.write(f"- **Failed:** {error_count}\n")
+            f.write(f"- **Success Rate:** {(success_count/total*100):.1f}%\n\n")
+            
+            if self.main_window:
+                f.write(f"**Workbook:** {self.main_window.workbook_path}\n")
+                f.write(f"**Active Sheet:** {self.main_window.active_sheet_name}\n\n")
+            
+            # Analyze failure patterns
+            f.write("## Failure Analysis\n\n")
+            exception_types = {}
+            for record in failed_records:
+                exc_type = record.get('exception_type', 'Unknown')
+                exception_types[exc_type] = exception_types.get(exc_type, 0) + 1
+            
+            f.write("### Exception Types\n\n")
+            for exc_type, count in sorted(exception_types.items(), key=lambda x: x[1], reverse=True):
+                f.write(f"- **{exc_type}:** {count} occurrences ({count/error_count*100:.1f}%)\n")
+            f.write("\n")
+            
+            # Detailed failure records (first 10)
+            f.write("## Detailed Failure Records (First 10)\n\n")
+            for i, record in enumerate(failed_records[:10], 1):
+                f.write(f"### Failure #{i}\n\n")
+                f.write(f"**Employee Information:**\n")
+                f.write(f"- Employee ID: `{record.get('employee_id', 'N/A')}`\n")
+                f.write(f"- Employee Name: `{record.get('employee_name', 'N/A')}`\n")
+                f.write(f"- Employee Sheet: `{record.get('employee_sheet', 'N/A')}`\n")
+                f.write(f"- Target Row: `{record.get('target_row', 'N/A')}`\n\n")
+                
+                f.write(f"**Write Target:**\n")
+                f.write(f"- Active Sheet: `{record.get('active_sheet', 'N/A')}`\n")
+                f.write(f"- Target Day: `{record.get('target_day', 'N/A')}`\n")
+                f.write(f"- Target Shift: `{record.get('target_shift', 'N/A')}`\n")
+                f.write(f"- Target Column: `{record.get('target_column', 'N/A')}`\n\n")
+                
+                f.write(f"**OCR Data:**\n")
+                f.write(f"- OCR ID: `{record.get('ocr_id', 'N/A')}`\n")
+                f.write(f"- OCR Name: `{record.get('ocr_name', 'N/A')}`\n\n")
+                
+                f.write(f"**Exception:**\n")
+                f.write(f"```\n")
+                f.write(f"{record.get('exception_type', 'Unknown')}: {record.get('exception_message', 'N/A')}\n")
+                f.write(f"```\n\n")
+            
+            # Root cause analysis
+            f.write("## Root Cause Analysis\n\n")
+            
+            # Check for common patterns
+            if 'KeyError' in exception_types:
+                f.write("### KeyError Issues\n")
+                f.write("- **Likely Cause:** Date column not found in date index\n")
+                f.write("- **Check:** Verify that the selected date exists in the workbook's date row\n")
+                f.write("- **Fix:** Ensure date indexing is correct and target day matches workbook structure\n\n")
+            
+            if 'ValueError' in exception_types:
+                # Check if sheet mismatch
+                sheet_mismatches = [r for r in failed_records if 'Sheet mismatch' in r.get('exception_message', '')]
+                if sheet_mismatches:
+                    f.write("### Sheet Mismatch\n")
+                    f.write(f"- **Affected Records:** {len(sheet_mismatches)}\n")
+                    f.write("- **Cause:** Employees belong to different sheet than active sheet\n")
+                    f.write("- **Fix:** This should not happen - indicates a validation bug\n\n")
+            
+            if 'AttributeError' in exception_types:
+                f.write("### AttributeError Issues\n")
+                f.write("- **Likely Cause:** Missing employee data or invalid workbook structure\n")
+                f.write("- **Check:** Verify employee objects have all required attributes (row, sheet_name, employee_id)\n\n")
+            
+            # Recommendations
+            f.write("## Recommended Actions\n\n")
+            f.write("1. Review the detailed failure records above\n")
+            f.write("2. Check `attenist.log` for full stack traces\n")
+            f.write("3. Verify workbook structure matches expected format\n")
+            f.write("4. Ensure date indexing captured the correct date columns\n")
+            f.write("5. Confirm active sheet matches employee data\n")
+            f.write("6. If all records failed, this indicates a systemic issue, not individual record problems\n\n")
+            
+            if error_count > 10:
+                f.write(f"## Additional Failures\n\n")
+                f.write(f"**Note:** {error_count - 10} additional failures not shown in detail. ")
+                f.write(f"Check the log file for complete information.\n\n")
+        
+        logging.info(f"COMMIT_DIAGNOSTICS: Failure report written to {report_path}")
 
     def refresh_sheet(self):
         if self.validation_results or self.current_images:
