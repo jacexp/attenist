@@ -198,7 +198,8 @@ class MainWindow(QWidget):
             item.setData(Qt.UserRole, emp)
             self.results_list.addItem(item)
         
-        if self.results_list.count() == 1:
+        # Always highlight the top result for single-enter workflow
+        if self.results_list.count() > 0:
             self.results_list.setCurrentRow(0)
 
     def on_selection_changed(self):
@@ -279,9 +280,10 @@ class MainWindow(QWidget):
             if current_item:
                 self.selected_employee = current_item.data(Qt.UserRole)
                 logging.info(f"MARK: Recovered selection from currentItem: {self.selected_employee.employee_id if self.selected_employee else 'None'}")
-            elif self.results_list.count() == 1:
+            elif self.results_list.count() > 0:
+                # Pick the TOP result automatically if multiple exist but nothing explicitly selected
                 self.selected_employee = self.results_list.item(0).data(Qt.UserRole)
-                logging.info(f"MARK: Recovered selection from single item in list: {self.selected_employee.employee_id if self.selected_employee else 'None'}")
+                logging.info(f"MARK: Recovered selection from TOP item in list: {self.selected_employee.employee_id if self.selected_employee else 'None'}")
 
         if not self.selected_employee:
             logging.warning("MARK: Rejecting attendance mark - no selection found in variable or UI list.")
