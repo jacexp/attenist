@@ -339,11 +339,12 @@ class VerificationWizard(QDialog):
 
         self.match_list = QListWidget()
         self.match_list.itemDoubleClicked.connect(self.accept_match)
+        self.match_list.itemClicked.connect(lambda item: self.on_match_selection_changed(item, None))
         self.match_list.currentItemChanged.connect(self.on_match_selection_changed)
         match_layout.addWidget(self.match_list)
 
-        self.no_match_label = QLabel("No possible matches found in this sheet.")
-        self.no_match_label.setStyleSheet("color: #999; padding: 8px;")
+        self.no_match_label = QLabel("No suggestions found (exhausted all matching stages).")
+        self.no_match_label.setStyleSheet("color: #D32F2F; padding: 8px; font-style: italic;")
         self.no_match_label.setVisible(False)
         match_layout.addWidget(self.no_match_label)
 
@@ -416,9 +417,19 @@ class VerificationWizard(QDialog):
                 for m in self.suggested_matches:
                     emp = m["employee"]
                     score = m["score"]
-                    text = f"{emp.employee_id} - {emp.name} ({emp.rank})  [{score:.0f}% match]"
+                    m_type = m.get("match_type", "Fuzzy")
+                    
+                    # Display format: EMP_ID - NAME | TYPE [SCORE%]
+                    text = f"{emp.employee_id} - {emp.name}\n   Match: {m_type}"
+                    if "Other Sheet" in m_type:
+                        text += f" | Sheet: {emp.sheet_name}"
+                    
                     item = QListWidgetItem(text)
                     item.setData(Qt.UserRole, emp)
+                    
+                    # Tooltip for details
+                    item.setToolTip(f"ID: {emp.employee_id}\nName: {emp.name}\nRank: {emp.rank}\nSheet: {emp.sheet_name}\nRow: {emp.row}")
+                    
                     self.match_list.addItem(item)
                 self.match_list.setCurrentRow(0)
             else:
@@ -615,74 +626,214 @@ class VerificationSummaryDialog(QDialog):
 
 
 class PostCommitSummaryDialog(QDialog):
-    def __init__(self, written: int, overwrites: int, skipped: int, errors: int,
-                 failed_records: List[Dict] = None, parent=None):
+    def __init__(self, written: List[Dict], overwritten: List[Dict], skipped: List[Dict], errors: List[Dict],
+                 workbook_info: Dict, parent=None):
         super().__init__(parent)
-        self.failed_records = failed_records or []
-        self.setup_ui(written, overwrites, skipped, errors)
+        self.written = written
+        self.overwritten = overwritten
+        self.skipped = skipped
+        self.errors = errors
+        self.workbook_info = workbook_info
+        self.setup_ui()
 
-    def setup_ui(self, written, overwrites, skipped, errors):
-        self.setWindowTitle("Commit Results")
+    def setup_ui(self):
+        self.setWindowTitle("Commit Detailed Summary")
         self.setModal(True)
-        self.resize(520, 400)
+        self.resize(700, 600)
 
         layout = QVBoxLayout()
 
-        lines = [
-            ("Records Written:", str(written), False),
-            ("Overwrites:", str(overwrites), False),
-            ("Skipped:", str(skipped), False),
-            ("Errors:", str(errors), errors > 0),
-        ]
-
-        header = QLabel("Workbook Saved Successfully" if errors == 0 else "Commit Completed with Errors")
-        header.setFont(QFont("", 14, QFont.Bold))
-        header.setStyleSheet("color: #4CAF50;" if errors == 0 else "color: #FF9800;")
+        # Header
+        total_success = len(self.written) + len(self.overwritten)
+        total_processed = total_success + len(self.skipped) + len(self.errors)
+        
+        header = QLabel("Commit Results Summary" if len(self.errors) == 0 else "Commit Completed with Issues")
+        header.setFont(QFont("", 16, QFont.Bold))
+        header.setStyleSheet("color: #2E7D32;" if len(self.errors) == 0 else "color: #C62828;")
         layout.addWidget(header)
-        layout.addSpacing(12)
+        
+        stats_row = QHBoxLayout()
+        stats_row.addWidget(self._create_stat_widget("WRITTEN", len(self.written), "#4CAF50"))
+        stats_row.addWidget(self._create_stat_widget("OVERWRITTEN", len(self.overwritten), "#2196F3"))
+        stats_row.addWidget(self._create_stat_widget("SKIPPED", len(self.skipped), "#757575"))
+        stats_row.addWidget(self._create_stat_widget("ERRORS", len(self.errors), "#F44336"))
+        layout.addLayout(stats_row)
 
-        for label_text, value, is_error in lines:
-            row = QHBoxLayout()
-            row.addWidget(QLabel(label_text))
-            val = QLabel(value)
-            val.setFont(QFont("", 12, QFont.Bold))
-            if is_error:
-                val.setStyleSheet("color: red;")
-            else:
-                val.setStyleSheet("color: #333;")
-            row.addWidget(val)
-            row.addStretch()
-            layout.addLayout(row)
+        layout.addSpacing(10)
 
-        # Show first 5 failure details if errors occurred
-        if errors > 0 and self.failed_records:
-            layout.addSpacing(8)
-            fail_header = QLabel("First Failure Details:")
-            fail_header.setFont(QFont("", 10, QFont.Bold))
-            fail_header.setStyleSheet("color: red;")
-            layout.addWidget(fail_header)
+        # Tabbed details
+        self.tabs = QTabWidget()
+        
+        self.tabs.addTab(self._create_list_tab(self.written, "No records written."), "Written")
+        self.tabs.addTab(self._create_overwritten_tab(), "Overwritten")
+        self.tabs.addTab(self._create_list_tab(self.skipped, "No records skipped."), "Skipped")
+        self.tabs.addTab(self._create_errors_tab(), "Errors")
+        self.tabs.addTab(self._create_info_tab(), "Target Info")
+        
+        layout.addWidget(self.tabs)
 
-            detail_text = QTextEdit()
-            detail_text.setReadOnly(True)
-            detail_text.setMaximumHeight(160)
-
-            for i, rec in enumerate(self.failed_records[:5], 1):
-                detail_text.append(
-                    f"#{i}: {rec.get('employee_id', 'N/A')} - {rec.get('employee_name', 'N/A')}\n"
-                    f"    Sheet: {rec.get('employee_sheet', 'N/A')} → Active: {rec.get('active_sheet', 'N/A')}\n"
-                    f"    Error: {rec.get('exception_type', 'Unknown')}: {rec.get('exception_message', 'N/A')}\n"
-                )
-
-            layout.addWidget(detail_text)
-
-        layout.addStretch()
-
-        ok_btn = QPushButton("OK")
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        save_report_btn = QPushButton("Save Report")
+        save_report_btn.setStyleSheet("padding: 8px 16px; background-color: #f0f0f0;")
+        save_report_btn.clicked.connect(self.save_report)
+        btn_layout.addWidget(save_report_btn)
+        
+        btn_layout.addStretch()
+        
+        ok_btn = QPushButton("Done")
+        ok_btn.setStyleSheet("padding: 8px 32px; background-color: #4CAF50; color: white; font-weight: bold;")
         ok_btn.clicked.connect(self.accept)
-        ok_btn.setStyleSheet("padding: 8px 32px;")
-        layout.addWidget(ok_btn, alignment=Qt.AlignCenter)
-
+        btn_layout.addWidget(ok_btn)
+        
+        layout.addLayout(btn_layout)
         self.setLayout(layout)
+
+    def _create_stat_widget(self, label, count, color):
+        w = QWidget()
+        l = QVBoxLayout(w)
+        num = QLabel(str(count))
+        num.setFont(QFont("", 18, QFont.Bold))
+        num.setStyleSheet(f"color: {color};")
+        num.setAlignment(Qt.AlignCenter)
+        txt = QLabel(label)
+        txt.setFont(QFont("", 9))
+        txt.setAlignment(Qt.AlignCenter)
+        l.addWidget(num)
+        l.addWidget(txt)
+        return w
+
+    def _create_list_tab(self, records, empty_msg):
+        if not records:
+            return QLabel(empty_msg)
+        
+        list_widget = QListWidget()
+        for r in records:
+            list_widget.addItem(f"{r.get('employee_id', 'N/A')} - {r.get('employee_name', 'N/A')}")
+        return list_widget
+
+    def _create_overwritten_tab(self):
+        if not self.overwritten:
+            return QLabel("No records overwritten.")
+        
+        list_widget = QListWidget()
+        for r in self.overwritten:
+            item = f"{r.get('employee_id', 'N/A')} - {r.get('employee_name', 'N/A')}\n"
+            item += f"    Previous: {r.get('old_value', 'empty')} -> New: {r.get('target_shift', 'N/A')}"
+            list_widget.addItem(item)
+        return list_widget
+
+    def _create_errors_tab(self):
+        if not self.errors:
+            return QLabel("No errors occurred.")
+        
+        list_widget = QListWidget()
+        for r in self.errors:
+            item = f"{r.get('employee_id', 'N/A')} - {r.get('employee_name', 'N/A')}\n"
+            item += f"    Error: {r.get('exception_type', 'Unknown')}\n"
+            item += f"    Reason: {r.get('exception_message', 'N/A')}"
+            list_widget.addItem(item)
+        return list_widget
+
+    def _create_info_tab(self):
+        w = QWidget()
+        l = QVBoxLayout(w)
+        info = QTextEdit()
+        info.setReadOnly(True)
+        
+        lines = [
+            "TARGET INFORMATION",
+            "-------------------",
+            f"Workbook:  {self.workbook_info.get('path', 'N/A')}",
+            f"Sheet:     {self.workbook_info.get('sheet', 'N/A')}",
+            f"Date:      {self.workbook_info.get('day', 'N/A')}",
+            f"Shift:     {self.workbook_info.get('shift', 'N/A')}",
+            "",
+            "BATCH STATISTICS",
+            "-------------------",
+            f"Processed: {self.workbook_info.get('total', 0)}",
+            f"Success:   {len(self.written) + len(self.overwritten)}",
+            f"Failed:    {len(self.errors)}",
+            f"Skipped:   {len(self.skipped)}"
+        ]
+        info.setText("\n".join(lines))
+        l.addWidget(info)
+        return w
+
+    def save_report(self):
+        try:
+            report_path = "commit_report.txt"
+            content = self._generate_report_text()
+            
+            with open(report_path, 'w') as f:
+                f.write(content)
+            
+            QMessageBox.information(self, "Report Saved", f"Detailed report saved to {report_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to save report: {e}")
+
+    def _generate_report_text(self):
+        lines = []
+        lines.append("---------------------------------------")
+        lines.append("COMMIT SUMMARY")
+        lines.append("---------------------------------------")
+        lines.append(f"Written:     {len(self.written)}")
+        lines.append(f"Overwritten: {len(self.overwritten)}")
+        lines.append(f"Skipped:     {len(self.skipped)}")
+        lines.append(f"Errors:      {len(self.errors)}")
+        lines.append("")
+        
+        if self.written:
+            lines.append("---------------------------------------")
+            lines.append("WRITTEN")
+            lines.append("---------------------------------------")
+            for r in self.written:
+                lines.append(f"{r.get('employee_id', 'N/A')} - {r.get('employee_name', 'N/A')}")
+            lines.append("")
+            
+        if self.overwritten:
+            lines.append("---------------------------------------")
+            lines.append("OVERWRITTEN")
+            lines.append("---------------------------------------")
+            for r in self.overwritten:
+                lines.append(f"{r.get('employee_id', 'N/A')} - {r.get('employee_name', 'N/A')}")
+                lines.append(f"    Previous: {r.get('old_value', 'empty')}")
+                lines.append(f"    New:      {r.get('target_shift', 'N/A')}")
+            lines.append("")
+            
+        if self.skipped:
+            lines.append("---------------------------------------")
+            lines.append("SKIPPED")
+            lines.append("---------------------------------------")
+            for r in self.skipped:
+                lines.append(f"{r.get('employee_id', 'N/A')} - {r.get('employee_name', 'N/A')}")
+                lines.append(f"    Reason: User selected Skip")
+            lines.append("")
+            
+        if self.errors:
+            lines.append("---------------------------------------")
+            lines.append("ERRORS")
+            lines.append("---------------------------------------")
+            for r in self.errors:
+                lines.append(f"{r.get('employee_id', 'N/A')} - {r.get('employee_name', 'N/A')}")
+                lines.append(f"    Error: {r.get('exception_type', 'Unknown')}")
+                lines.append(f"    Reason: {r.get('exception_message', 'N/A')}")
+            lines.append("")
+            
+        lines.append("---------------------------------------")
+        lines.append("TARGET INFORMATION")
+        lines.append("---------------------------------------")
+        lines.append(f"Workbook:  {self.workbook_info.get('path', 'N/A')}")
+        lines.append(f"Sheet:     {self.workbook_info.get('sheet', 'N/A')}")
+        lines.append(f"Date:      {self.workbook_info.get('day', 'N/A')}")
+        lines.append(f"Shift:     {self.workbook_info.get('shift', 'N/A')}")
+        lines.append(f"Processed: {self.workbook_info.get('total', 0)}")
+        lines.append(f"Success:   {len(self.written) + len(self.overwritten)}")
+        lines.append(f"Failed:    {len(self.errors)}")
+        lines.append("---------------------------------------")
+        
+        return "\n".join(lines)
 
 
 class OCRAttendanceTab(QWidget):
@@ -1324,42 +1475,56 @@ class OCRAttendanceTab(QWidget):
         self.refresh_models_btn.setEnabled(False)
 
         total = len(ready_results)
-        success_count = 0
-        overwrite_count = 0
-        error_count = 0
-        failed_records = []  # Collect detailed failure info
+        
+        # Categorized lists for summary
+        written_list = []
+        overwritten_list = []
+        error_list = []
+        skipped_list = []
+        
+        # Collect explicitly skipped (unchecked) records
+        for res in self.validation_results:
+            if not res.is_checked:
+                skipped_list.append({
+                    'employee_id': res.ocr_id,
+                    'employee_name': res.ocr_name,
+                    'reason': 'User selected Skip'
+                })
 
         for i, result in enumerate(ready_results):
+            emp = result.matched_employee
             try:
                 old_value = self.attendance_service.mark(
-                    result.matched_employee,
+                    emp,
                     day,
                     shift,
                     active_sheet
                 )
 
-                if old_value is not None and old_value != "":
-                    overwrite_count += 1
+                record_data = {
+                    'employee_id': emp.employee_id,
+                    'employee_name': emp.name,
+                    'old_value': old_value,
+                    'target_shift': shift
+                }
 
-                success_count += 1
+                if old_value is not None and old_value != "":
+                    overwritten_list.append(record_data)
+                else:
+                    written_list.append(record_data)
 
                 self.progress_bar.setValue(int((i + 1) / total * 100))
                 self.status_label.setText(f"Writing record {i + 1}/{total}...")
 
             except Exception as e:
-                error_count += 1
-                
                 # Capture comprehensive failure details
-                emp = result.matched_employee
-                
-                # Safely get target column for diagnostics
                 target_col = 'N/A'
                 if emp and hasattr(self.attendance_service, 'dates'):
                     dates = self.attendance_service.dates
                     if isinstance(dates, dict):
                         if emp.sheet_name in dates:
                             target_col = dates[emp.sheet_name].get(day, 'N/A')
-                        elif day in dates: # Global fallback
+                        elif day in dates:
                             target_col = dates.get(day, 'N/A')
 
                 failure_detail = {
@@ -1376,75 +1541,63 @@ class OCRAttendanceTab(QWidget):
                     'ocr_id': result.ocr_id,
                     'ocr_name': result.ocr_name
                 }
-                failed_records.append(failure_detail)
+                error_list.append(failure_detail)
                 
-                # Detailed logging
-                logging.error(f"=== COMMIT FAILURE #{error_count} ===")
-                logging.error(f"Employee ID: {failure_detail['employee_id']}")
-                logging.error(f"Employee Name: {failure_detail['employee_name']}")
-                logging.error(f"Employee Sheet: {failure_detail['employee_sheet']}")
-                logging.error(f"Active Sheet: {failure_detail['active_sheet']}")
-                logging.error(f"Target Day: {failure_detail['target_day']}")
-                logging.error(f"Target Shift: {failure_detail['target_shift']}")
-                logging.error(f"Target Row: {failure_detail['target_row']}")
-                logging.error(f"Target Column: {failure_detail['target_column']}")
-                logging.error(f"Exception: {failure_detail['exception_type']}: {failure_detail['exception_message']}")
-                logging.error(f"OCR Data: ID={failure_detail['ocr_id']}, Name={failure_detail['ocr_name']}")
-                
-                import traceback
-                logging.error(f"Traceback:\n{traceback.format_exc()}")
+                logging.error(f"COMMIT FAILURE: {failure_detail['employee_id']} - {failure_detail['exception_message']}")
 
         self.progress_bar.setVisible(False)
         self.status_label.setVisible(False)
 
         self.save_button.setEnabled(True)
         self.verify_button.setEnabled(True)
-        self.model_combo.setEnabled(True)  # Unlock model after commit
+        self.model_combo.setEnabled(True)
         self.refresh_models_btn.setEnabled(True)
 
-        # Generate failure report if errors occurred
+        success_count = len(written_list) + len(overwritten_list)
+        error_count = len(error_list)
+
+        # Generate failure report MD if errors occurred
         if error_count > 0:
-            self._generate_commit_failure_report(failed_records, success_count, error_count, total)
-            
-            # Show detailed error message for critical failures
+            self._generate_commit_failure_report(error_list, success_count, error_count, total)
             if success_count == 0:
-                first_failure = failed_records[0] if failed_records else {}
+                first_failure = error_list[0]
                 QMessageBox.critical(
                     self, "Critical Commit Failure",
                     f"All {total} records failed to write!\n\n"
                     f"First Failure:\n"
-                    f"Employee: {first_failure.get('employee_id', 'N/A')} - {first_failure.get('employee_name', 'N/A')}\n"
-                    f"Error: {first_failure.get('exception_type', 'Unknown')}: {first_failure.get('exception_message', 'N/A')}\n\n"
-                    f"A detailed failure report has been saved to:\n"
-                    f"COMMIT_FAILURE_REPORT.md\n\n"
-                    f"Check the log file for full details."
+                    f"Employee: {first_failure.get('employee_id', 'N/A')}\n"
+                    f"Error: {first_failure.get('exception_message', 'N/A')}"
                 )
 
-        # Only save if at least one record succeeded
+        # Auto-save workbook if any success
         try:
             if self.main_window and success_count > 0:
                 self.attendance_service.save(self.main_window.workbook_path)
-                logging.info(f"OCR COMMIT: Workbook saved to {self.main_window.workbook_path} ({success_count} records)")
-            elif success_count == 0:
-                logging.warning("OCR COMMIT: No records succeeded. Skipping workbook save.")
+                logging.info(f"OCR COMMIT: Workbook saved ({success_count} records)")
         except Exception as e:
-
             logging.error(f"OCR COMMIT: Failed to save workbook: {e}")
-            QMessageBox.warning(self, "Save Warning",
-                              f"Records were written but workbook could not be auto-saved: {e}")
+            QMessageBox.warning(self, "Save Warning", f"Records written but workbook could not be auto-saved: {e}")
 
-        skipped = sum(1 for r in self.validation_results if not r.is_checked)
-
+        # Show detailed summary dialog
+        workbook_info = {
+            'path': os.path.basename(self.main_window.workbook_path) if self.main_window else "N/A",
+            'sheet': active_sheet,
+            'day': day,
+            'shift': shift,
+            'total': total + len(skipped_list)
+        }
+        
         dialog = PostCommitSummaryDialog(
-            written=success_count,
-            overwrites=overwrite_count,
-            skipped=skipped,
-            errors=error_count,
-            failed_records=failed_records,
+            written=written_list,
+            overwritten=overwritten_list,
+            skipped=skipped_list,
+            errors=error_list,
+            workbook_info=workbook_info,
             parent=self
         )
         dialog.exec()
 
+        # Cleanup
         self.validation_results = [r for r in self.validation_results if r not in ready_results]
         self.update_statistics()
         self.update_commit_readiness()

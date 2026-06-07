@@ -219,53 +219,108 @@ class OCRValidationService:
             return None
 
     def find_possible_matches(self, ocr_id: str, ocr_name: str, sheet_name: str, limit: int = 5) -> List[Dict]:
+        """
+        Implementation of the mandatory matching pipeline for OCR suggestions.
+        1. Exact Employee ID
+        2. Normalized Employee ID
+        3. Exact Name
+        4. Case-insensitive Name
+        5. Normalized Name
+        6. Prefix Name Match
+        7. Partial Name Match
+        8. Fuzzy Name Match
+        """
         try:
+            # Normalize inputs
+            norm_ocr_id = WorkbookService.normalize_id(ocr_id)
+            norm_ocr_name = WorkbookService.normalize_name(ocr_name)
+            
+            # Start with active sheet employees
             sheet_emps = self.workbook_service.get_employees_by_sheet_as_objects(sheet_name)
             
-            # If no employees found in this sheet, broaden search to all sheets
-            search_pool = sheet_emps
-            search_scope = f"sheet='{sheet_name}'"
-            
+            # If no employees in this sheet, broaden to all sheets immediately
             if not sheet_emps:
                 search_pool = self.workbook_service.employees
-                search_scope = "ALL SHEETS (fallback)"
-                logging.info(f"MATCH_SEARCH: No employees in sheet '{sheet_name}', falling back to all sheets")
+                search_scope = "ALL SHEETS (fallback - empty sheet)"
+                logging.info(f"MATCH_SEARCH: No employees in sheet '{sheet_name}', broadening to all sheets")
+            else:
+                search_pool = sheet_emps
+                search_scope = f"sheet='{sheet_name}'"
 
-            scored = []
-            normalized_ocr_id = WorkbookService.normalize_id(ocr_id)
-            normalized_ocr_name = WorkbookService.normalize_name(ocr_name)
-            for emp in search_pool:
-                normalized_emp_id = WorkbookService.normalize_id(emp.employee_id)
-                id_score = fuzz.ratio(normalized_ocr_id, normalized_emp_id)
-                name_score = fuzz.partial_ratio(normalized_ocr_name, emp.name) if normalized_ocr_name else 0
-                combined = max(id_score, name_score)
-                if combined >= 40:
-                    scored.append({"employee": emp, "score": combined})
-
-            scored.sort(key=lambda x: x["score"], reverse=True)
+            scored_results = []
             
-            # If still no matches and we were sheet-restricted, try all sheets anyway
-            if not scored and search_pool is sheet_emps:
-                logging.info(f"MATCH_SEARCH: No matches in sheet '{sheet_name}' above 40%, trying global fallback")
-                for emp in self.workbook_service.employees:
-                    normalized_emp_id = WorkbookService.normalize_id(emp.employee_id)
-                    id_score = fuzz.ratio(normalized_ocr_id, normalized_emp_id)
-                    name_score = fuzz.partial_ratio(normalized_ocr_name, emp.name) if normalized_ocr_name else 0
-                    combined = max(id_score, name_score)
-                    if combined >= 40:
-                        scored.append({"employee": emp, "score": combined})
-                scored.sort(key=lambda x: x["score"], reverse=True)
-                search_scope = "ALL SHEETS (broadened fallback)"
+            for emp in search_pool:
+                emp_id = emp.employee_id
+                norm_emp_id = WorkbookService.normalize_id(emp_id)
+                emp_name = emp.name # Already normalized in WorkbookService._build_index
+                
+                score = 0
+                match_type = "none"
+
+                # 1. Exact ID
+                if ocr_id and emp_id == ocr_id:
+                    score, match_type = 100, "Exact ID"
+                # 2. Normalized ID
+                elif norm_ocr_id and norm_emp_id == norm_ocr_id:
+                    score, match_type = 98, "Normalized ID"
+                # 3. Exact Name (Normalized)
+                elif norm_ocr_name and emp_name == norm_ocr_name:
+                    score, match_type = 95, "Exact Name"
+                # 6. Prefix Name Match
+                elif norm_ocr_name and (emp_name.startswith(norm_ocr_name) or norm_ocr_name.startswith(emp_name)):
+                    score, match_type = 90, "Prefix Name"
+                # 7. Partial Name Match
+                elif norm_ocr_name and norm_ocr_name in emp_name:
+                    score, match_type = 85, "Partial Name"
+                # 8. Fuzzy Name Match
+                else:
+                    id_ratio = fuzz.ratio(norm_ocr_id, norm_emp_id) if norm_ocr_id else 0
+                    name_ratio = fuzz.ratio(norm_ocr_name, emp_name) if norm_ocr_name else 0
+                    score = max(id_ratio, name_ratio)
+                    match_type = f"Fuzzy ({score:.0f}%)"
+                    
+                    if score < 30:
+                        continue
+
+                scored_results.append({
+                    "employee": emp,
+                    "score": score,
+                    "match_type": match_type,
+                    "sheet": emp.sheet_name
+                })
+
+            # Sort by score descending
+            scored_results.sort(key=lambda x: x["score"], reverse=True)
+            
+            # Global Fallback: If still no good matches in sheet, try all sheets
+            if not scored_results and search_pool is sheet_emps:
+                logging.info(f"MATCH_SEARCH: No matches in sheet '{sheet_name}', trying global fallback")
+                # Recursive call with sheet_name=None to search all
+                fallback_results = self.find_possible_matches(ocr_id, ocr_name, "", limit)
+                for r in fallback_results:
+                    r["match_type"] = f"{r['match_type']} (Other Sheet)"
+                return fallback_results
+
+            if not scored_results:
+                logging.warning(
+                    f"SUGGESTION DEBUG:\n"
+                    f"  OCR ID:       {ocr_id}\n"
+                    f"  OCR Name:     {ocr_name}\n"
+                    f"  Active Sheet: {sheet_name}\n"
+                    f"  Result:       No candidates found in ANY matching stage."
+                )
 
             logging.info(
-                f"MATCH_SEARCH: find_possible_matches ocr_id='{ocr_id}' "
-                f"ocr_name='{ocr_name}' scope={search_scope} "
-                f"candidates={len(search_pool)} returned={len(scored)} displayed={min(len(scored), limit)}"
+                f"MATCH_SEARCH: find_possible_matches OCR='{ocr_id} | {ocr_name}' "
+                f"scope={search_scope} results={len(scored_results)} top='{scored_results[0]['employee'].name if scored_results else 'None'}'"
             )
-            return scored[:limit]
+            
+            return scored_results[:limit]
 
         except Exception as e:
             logging.error(f"find_possible_matches failed: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             return []
 
     def manual_correction(self, result: OCRValidationResult,
