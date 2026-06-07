@@ -205,17 +205,23 @@ class MainWindow(QWidget):
         self.selected_employee = selected_items[0].data(32)
 
     def on_sheet_changed(self, sheet_name):
+        # Prevent recursion and handle cancellation
+        if hasattr(self, '_switching_sheet') and self._switching_sheet:
+            return
+
+        # Check if OCR tab allows change (shows confirmation dialog if data exists)
+        if hasattr(self, 'ocr_attendance_tab'):
+            if not self.ocr_attendance_tab.refresh_sheet():
+                # Revert selection
+                self._switching_sheet = True
+                self.sheet_selector.setCurrentText(self.active_sheet_name)
+                self._switching_sheet = False
+                return
+
         self.active_sheet_name = sheet_name
         # Refresh search if there is text
         if self.search_box.text():
             self.on_search_changed(self.search_box.text())
-        
-        # Update OCR tab's active sheet label (always)
-        self.ocr_attendance_tab.active_sheet_label.setText(f"Active Sheet: {sheet_name}")
-        
-        # Refresh OCR tab if it's visible (shows confirmation dialog)
-        if self.ocr_attendance_tab.isVisible():
-            self.ocr_attendance_tab.refresh_sheet()
 
     def mark_attendance(self):
         if not self.selected_employee:

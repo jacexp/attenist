@@ -9,8 +9,25 @@ from core.models import Employee
 from rapidfuzz import fuzz
 
 
+import re
+
 class WorkbookService:
     """Provides employee search/lookup using workbook as single source of truth."""
+
+    @staticmethod
+    def normalize_id(emp_id: str) -> str:
+        """Normalize ID by removing dashes, spaces, underscores, and dots."""
+        if not emp_id:
+            return ""
+        return re.sub(r'[-_\s.]', '', str(emp_id)).upper()
+
+    @staticmethod
+    def normalize_name(name: str) -> str:
+        """Normalize name by stripping, upping, and collapsing multiple spaces."""
+        if not name:
+            return ""
+        # Remove extra spaces between words and around
+        return re.sub(r'\s+', ' ', str(name)).strip().upper()
 
     def __init__(self, employees: List[Employee]):
         """
@@ -27,10 +44,13 @@ class WorkbookService:
     def _build_index(self):
         """Build in-memory lookup indexes."""
         for emp in self.employees:
-            eid = emp.employee_id.upper()
+            eid = self.normalize_id(emp.employee_id)
             self._by_id[eid] = emp
+            
+            # Ensure name is normalized for consistent lookup (in memory)
+            emp.name = self.normalize_name(emp.name)
 
-            sheet = emp.sheet_name or ""
+            sheet = (emp.sheet_name or "").strip().upper()
             if sheet not in self._by_sheet:
                 self._by_sheet[sheet] = []
             self._by_sheet[sheet].append(emp)
@@ -43,7 +63,7 @@ class WorkbookService:
 
     def get_employee_by_id(self, emp_id: str) -> Optional[Dict]:
         """Get employee by ID. Returns dict for backward compatibility."""
-        emp = self._by_id.get(emp_id.upper())
+        emp = self._by_id.get(self.normalize_id(emp_id))
         if emp:
             return {
                 "emp_id": emp.employee_id,
@@ -56,13 +76,13 @@ class WorkbookService:
 
     def get_employee_as_object(self, emp_id: str) -> Optional[Employee]:
         """Get employee as Employee object."""
-        return self._by_id.get(emp_id.upper())
+        return self._by_id.get(self.normalize_id(emp_id))
 
     def search_employees(self, query: str, limit: int = 50,
                          sheet_name: Optional[str] = None) -> List[Dict]:
         """
         Search employees by name or ID, optionally filtered by sheet.
-        Returns list of dicts for backward compatibility.
+        Returns list of dicts with 'employee' object and metadata.
         """
         q = query.strip().upper()
         if not q:
@@ -88,6 +108,7 @@ class WorkbookService:
 
             if score >= 10:
                 results.append({
+                    "employee": emp,
                     "emp_id": emp.employee_id,
                     "emp_name": emp.name,
                     "rank": emp.rank,
@@ -103,16 +124,12 @@ class WorkbookService:
                                    sheet_name: Optional[str] = None) -> List[Employee]:
         """Search employees and return as Employee objects."""
         results = self.search_employees(query, limit, sheet_name)
-        objects = []
-        for r in results:
-            emp = self._by_id.get(r["emp_id"].upper())
-            if emp:
-                objects.append(emp)
-        return objects
+        return [r["employee"] for r in results]
 
     def get_employees_by_sheet(self, sheet_name: str) -> List[Dict]:
         """Get all employees from a specific sheet as dicts."""
-        emps = self._by_sheet.get(sheet_name, [])
+        sheet_key = sheet_name.strip().upper()
+        emps = self._by_sheet.get(sheet_key, [])
         return [
             {
                 "emp_id": emp.employee_id,
@@ -126,7 +143,9 @@ class WorkbookService:
 
     def get_employees_by_sheet_as_objects(self, sheet_name: str) -> List[Employee]:
         """Get all employees from a sheet as Employee objects."""
-        return self._by_sheet.get(sheet_name, [])
+        sheet_key = sheet_name.strip().upper()
+        return self._by_sheet.get(sheet_key, [])
+
 
     def get_all_employees(self, limit: int = 1000) -> List[Dict]:
         """Get all employees as dicts."""

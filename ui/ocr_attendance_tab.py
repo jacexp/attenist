@@ -162,11 +162,15 @@ class EmployeeSearchDialog(QDialog):
                 total_employees = self.validation_service.workbook_service.get_employee_count()
                 total_in_sheet = total_employees
 
-            employees = self.validation_service.search_employees_for_manual_match(
+            employees, total_matches = self.validation_service.search_employees_for_manual_match_with_count(
                 query, sheet_name=current_sheet, limit=100
             )
 
-            results_text = f"Results: {len(employees)}"
+            if len(employees) < total_matches:
+                results_text = f"Showing {len(employees)} of {total_matches} results"
+            else:
+                results_text = f"Results: {len(employees)}"
+                
             if not self.scope_toggle.isChecked():
                 results_text += " (all sheets)"
             self.count_label.setText(results_text)
@@ -399,7 +403,7 @@ class VerificationWizard(QDialog):
         self.match_list.clear()
         self.no_match_label.setVisible(False)
 
-        if result.status == OCRStatus.UNMATCHED:
+        if result.status in (OCRStatus.UNMATCHED, OCRStatus.UNREADABLE):
             self.match_group.setVisible(True)
             self.suggested_matches = self.validation_service.find_possible_matches(
                 result.ocr_id, result.ocr_name, self.sheet_name, limit=5
@@ -510,21 +514,43 @@ class VerificationWizard(QDialog):
     def get_results(self) -> List[OCRValidationResult]:
         return self.all_results
 
+    def keyPressEvent(self, event):
+        if event.modifiers() == Qt.ControlModifier and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.change_match()
+            return
+        elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if self.accept_btn.isEnabled():
+                self.accept_match()
+            else:
+                self.next_record()
+            return
+        elif event.key() == Qt.Key_Escape:
+            self.skip_record()
+            return
+        elif event.key() == Qt.Key_Right:
+            self.next_record()
+            return
+        elif event.key() == Qt.Key_Left:
+            self.previous_record()
+            return
+
+        super().keyPressEvent(event)
+
 
 class VerificationSummaryDialog(QDialog):
     def __init__(self, workbook_name: str, sheet_name: str, images_count: int,
                  total: int, confirmed: int, corrected: int, skipped: int,
-                 shift: str, rows_to_mark: int,
+                 shift: str, day: int, rows_to_mark: int,
                  ready_results: List = None, parent=None):
         super().__init__(parent)
         self.rows_to_mark = rows_to_mark
         self.ready_results = ready_results or []
-        self.setup_ui(workbook_name, sheet_name, images_count, total, confirmed, corrected, skipped, shift)
+        self.setup_ui(workbook_name, sheet_name, images_count, total, confirmed, corrected, skipped, shift, day)
 
-    def setup_ui(self, workbook_name, sheet_name, images_count, total, confirmed, corrected, skipped, shift):
+    def setup_ui(self, workbook_name, sheet_name, images_count, total, confirmed, corrected, skipped, shift, day):
         self.setWindowTitle("Verification Summary")
         self.setModal(True)
-        self.resize(520, 500)
+        self.resize(600, 500)
 
         layout = QVBoxLayout()
 
@@ -539,6 +565,7 @@ class VerificationSummaryDialog(QDialog):
             f"Corrected:  {corrected}",
             f"Skipped:  {skipped}",
             "",
+            f"Date:  {day}",
             f"Shift:  {shift}",
             f"Rows To Mark:  {self.rows_to_mark}",
         ]
@@ -548,25 +575,25 @@ class VerificationSummaryDialog(QDialog):
                 layout.addSpacing(4)
             else:
                 label = QLabel(line)
-                if line.startswith("Rows To Mark") or line.startswith("Shift"):
+                if line.startswith("Rows To Mark") or line.startswith("Shift") or line.startswith("Date"):
                     label.setFont(QFont("", 11, QFont.Bold))
                 layout.addWidget(label)
 
         layout.addSpacing(8)
 
         # Employee list header
-        emp_header = QLabel("Employees to be written:")
+        emp_header = QLabel("Attendance Preview (Employee | Date | Shift | Target Sheet | Target Row):")
         emp_header.setFont(QFont("", 10, QFont.Bold))
         layout.addWidget(emp_header)
 
         # Scrollable employee list
         self.emp_list = QListWidget()
-        self.emp_list.setMaximumHeight(180)
+        self.emp_list.setMaximumHeight(200)
         for result in self.ready_results:
             emp = result.matched_employee
             if emp:
                 corrected_mark = " [CORRECTED]" if result.manually_corrected else ""
-                item_text = f"{emp.employee_id}  —  {emp.name}{corrected_mark}"
+                item_text = f"{emp.employee_id} - {emp.name}{corrected_mark} | Day {day} | Shift {shift} | Sheet: {emp.sheet_name} | Row: {emp.row}"
                 self.emp_list.addItem(item_text)
         layout.addWidget(self.emp_list)
 
@@ -1261,6 +1288,7 @@ class OCRAttendanceTab(QWidget):
             corrected=corrected,
             skipped=skipped,
             shift=shift,
+            day=day,
             rows_to_mark=len(ready_results),
             ready_results=ready_results,
             parent=self
@@ -1323,6 +1351,17 @@ class OCRAttendanceTab(QWidget):
                 
                 # Capture comprehensive failure details
                 emp = result.matched_employee
+                
+                # Safely get target column for diagnostics
+                target_col = 'N/A'
+                if emp and hasattr(self.attendance_service, 'dates'):
+                    dates = self.attendance_service.dates
+                    if isinstance(dates, dict):
+                        if emp.sheet_name in dates:
+                            target_col = dates[emp.sheet_name].get(day, 'N/A')
+                        elif day in dates: # Global fallback
+                            target_col = dates.get(day, 'N/A')
+
                 failure_detail = {
                     'employee_id': emp.employee_id if emp else 'N/A',
                     'employee_name': emp.name if emp else 'N/A',
@@ -1331,7 +1370,7 @@ class OCRAttendanceTab(QWidget):
                     'target_day': day,
                     'target_shift': shift,
                     'target_row': emp.row if emp else 'N/A',
-                    'target_column': self.attendance_service.dates.get(day, 'N/A') if hasattr(self.attendance_service, 'dates') else 'N/A',
+                    'target_column': target_col,
                     'exception_type': type(e).__name__,
                     'exception_message': str(e),
                     'ocr_id': result.ocr_id,
@@ -1381,12 +1420,15 @@ class OCRAttendanceTab(QWidget):
                     f"Check the log file for full details."
                 )
 
-        # Auto-save workbook after commit
+        # Only save if at least one record succeeded
         try:
-            if self.main_window:
+            if self.main_window and success_count > 0:
                 self.attendance_service.save(self.main_window.workbook_path)
-                logging.info(f"OCR COMMIT: Workbook saved to {self.main_window.workbook_path}")
+                logging.info(f"OCR COMMIT: Workbook saved to {self.main_window.workbook_path} ({success_count} records)")
+            elif success_count == 0:
+                logging.warning("OCR COMMIT: No records succeeded. Skipping workbook save.")
         except Exception as e:
+
             logging.error(f"OCR COMMIT: Failed to save workbook: {e}")
             QMessageBox.warning(self, "Save Warning",
                               f"Records were written but workbook could not be auto-saved: {e}")
@@ -1503,28 +1545,32 @@ class OCRAttendanceTab(QWidget):
         
         logging.info(f"COMMIT_DIAGNOSTICS: Failure report written to {report_path}")
 
-    def refresh_sheet(self):
+    def refresh_sheet(self) -> bool:
+        """Returns True if sheet change is allowed, False if cancelled by user."""
         if self.validation_results or self.current_images:
             reply = QMessageBox.question(
                 self,
                 "Sheet Changed",
                 "The active sheet has changed. This will clear current OCR results. Continue?",
                 QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
+                QMessageBox.No
             )
-            if reply == QMessageBox.Yes:
-                self.validation_results.clear()
-                self.current_images.clear()
-                self.raw_response_text.clear()
-                self.update_files_display()
-                self.stats_label.setText("Ready to process images")
-                self.verify_button.setEnabled(False)
-                self.save_button.setEnabled(False)
-                self.process_button.setEnabled(self.ocr_enabled)
-                self.verify_status_label.setText("Process images to begin verification")
+            if reply != QMessageBox.Yes:
+                return False
 
-            active_sheet = self.main_window.active_sheet_name if self.main_window else "(none)"
-            self.active_sheet_label.setText(f"Active Sheet: {active_sheet}")
+            self.validation_results.clear()
+            self.current_images.clear()
+            self.raw_response_text.clear()
+            self.update_files_display()
+            self.stats_label.setText("Ready to process images")
+            self.verify_button.setEnabled(False)
+            self.save_button.setEnabled(False)
+            self.process_button.setEnabled(self.ocr_enabled)
+            self.verify_status_label.setText("Process images to begin verification")
+
+        active_sheet = self.main_window.active_sheet_name if self.main_window else "(none)"
+        self.active_sheet_label.setText(f"Active Sheet: {active_sheet}")
+        return True
 
     def clear_all(self):
         reply = QMessageBox.question(self, "Clear All Data",

@@ -95,15 +95,17 @@ class OCRValidationService:
         return validation_results
 
     def _validate_single_result(self, ocr_item: Dict, sheet_name: Optional[str] = None) -> OCRValidationResult:
-        ocr_id = ocr_item.get('id', '').strip().upper()
-        ocr_name = ocr_item.get('name', '').strip().upper()
+        raw_ocr_id = ocr_item.get('id', '').strip()
+        ocr_id = WorkbookService.normalize_id(raw_ocr_id)
+        raw_ocr_name = ocr_item.get('name', '').strip()
+        ocr_name = WorkbookService.normalize_name(raw_ocr_name)
 
         # Try ID-based matching first if ID format is valid
         if self._is_valid_id_format(ocr_id):
             matched_employee = self._find_exact_match(ocr_id, sheet_name=sheet_name)
             if matched_employee:
                 return OCRValidationResult(
-                    ocr_id=ocr_id,
+                    ocr_id=raw_ocr_id or ocr_id,
                     ocr_name=ocr_name,
                     status=OCRStatus.CONFIRMED,
                     matched_employee=matched_employee,
@@ -111,7 +113,7 @@ class OCRValidationService:
                 )
             else:
                 return OCRValidationResult(
-                    ocr_id=ocr_id,
+                    ocr_id=raw_ocr_id or ocr_id,
                     ocr_name=ocr_name,
                     status=OCRStatus.UNMATCHED,
                     validation_notes="Valid ID format but no matching employee found in active sheet"
@@ -122,7 +124,7 @@ class OCRValidationService:
             name_match = self._find_name_match(ocr_name, sheet_name=sheet_name)
             if name_match:
                 return OCRValidationResult(
-                    ocr_id=ocr_id,
+                    ocr_id=raw_ocr_id or ocr_id,
                     ocr_name=ocr_name,
                     status=OCRStatus.CONFIRMED,
                     matched_employee=name_match,
@@ -131,7 +133,7 @@ class OCRValidationService:
 
         # No valid ID and no name match - return unreadable
         return OCRValidationResult(
-            ocr_id=ocr_id,
+            ocr_id=raw_ocr_id or ocr_id,
             ocr_name=ocr_name,
             status=OCRStatus.UNREADABLE,
             validation_notes="Could not read a valid employee ID and name matching failed"
@@ -174,10 +176,11 @@ class OCRValidationService:
             best_match = None
             best_score = 0
 
-            name_upper = ocr_name.upper()
+            name_upper = WorkbookService.normalize_name(ocr_name)
             
             for emp in candidates:
-                emp_name = emp.name.upper() if emp.name else ""
+                # emp.name is already normalized in WorkbookService._build_index
+                emp_name = emp.name or ""
                 
                 # Exact match
                 if emp_name == name_upper:
@@ -218,23 +221,46 @@ class OCRValidationService:
     def find_possible_matches(self, ocr_id: str, ocr_name: str, sheet_name: str, limit: int = 5) -> List[Dict]:
         try:
             sheet_emps = self.workbook_service.get_employees_by_sheet_as_objects(sheet_name)
-
+            
+            # If no employees found in this sheet, broaden search to all sheets
+            search_pool = sheet_emps
+            search_scope = f"sheet='{sheet_name}'"
+            
             if not sheet_emps:
-                return []
+                search_pool = self.workbook_service.employees
+                search_scope = "ALL SHEETS (fallback)"
+                logging.info(f"MATCH_SEARCH: No employees in sheet '{sheet_name}', falling back to all sheets")
 
             scored = []
-            for emp in sheet_emps:
-                id_score = fuzz.ratio(ocr_id.upper(), emp.employee_id.upper())
-                name_score = fuzz.partial_ratio(ocr_name.upper(), emp.name.upper()) if ocr_name else 0
+            normalized_ocr_id = WorkbookService.normalize_id(ocr_id)
+            normalized_ocr_name = WorkbookService.normalize_name(ocr_name)
+            for emp in search_pool:
+                normalized_emp_id = WorkbookService.normalize_id(emp.employee_id)
+                id_score = fuzz.ratio(normalized_ocr_id, normalized_emp_id)
+                name_score = fuzz.partial_ratio(normalized_ocr_name, emp.name) if normalized_ocr_name else 0
                 combined = max(id_score, name_score)
                 if combined >= 40:
                     scored.append({"employee": emp, "score": combined})
 
             scored.sort(key=lambda x: x["score"], reverse=True)
+            
+            # If still no matches and we were sheet-restricted, try all sheets anyway
+            if not scored and search_pool is sheet_emps:
+                logging.info(f"MATCH_SEARCH: No matches in sheet '{sheet_name}' above 40%, trying global fallback")
+                for emp in self.workbook_service.employees:
+                    normalized_emp_id = WorkbookService.normalize_id(emp.employee_id)
+                    id_score = fuzz.ratio(normalized_ocr_id, normalized_emp_id)
+                    name_score = fuzz.partial_ratio(normalized_ocr_name, emp.name) if normalized_ocr_name else 0
+                    combined = max(id_score, name_score)
+                    if combined >= 40:
+                        scored.append({"employee": emp, "score": combined})
+                scored.sort(key=lambda x: x["score"], reverse=True)
+                search_scope = "ALL SHEETS (broadened fallback)"
+
             logging.info(
                 f"MATCH_SEARCH: find_possible_matches ocr_id='{ocr_id}' "
-                f"ocr_name='{ocr_name}' sheet='{sheet_name}' "
-                f"db_matches={len(sheet_emps)} returned={len(scored)} displayed={min(len(scored), limit)}"
+                f"ocr_name='{ocr_name}' scope={search_scope} "
+                f"candidates={len(search_pool)} returned={len(scored)} displayed={min(len(scored), limit)}"
             )
             return scored[:limit]
 
@@ -326,10 +352,10 @@ class OCRValidationService:
 
         return scored
 
-    def search_employees_for_manual_match(self, query: str, sheet_name: Optional[str] = None, limit: int = 100) -> List[Employee]:
+    def search_employees_for_manual_match_with_count(self, query: str, sheet_name: Optional[str] = None, limit: int = 100) -> Tuple[List[Employee], int]:
         q = query.strip()
         if not q:
-            return []
+            return [], 0
 
         diagnostics = {
             "query": q,
@@ -402,7 +428,11 @@ class OCRValidationService:
             f"truncated={diagnostics['truncated_by_limit']} "
             f"filtered_by_score={diagnostics['filtered_by_score']}"
         )
-        return [emp for emp, _score in top]
+        return [emp for emp, _score in top], len(sorted_results)
+
+    def search_employees_for_manual_match(self, query: str, sheet_name: Optional[str] = None, limit: int = 100) -> List[Employee]:
+        emps, _ = self.search_employees_for_manual_match_with_count(query, sheet_name, limit)
+        return emps
 
     def get_validation_statistics(self) -> Dict:
         return self.validation_stats.copy()

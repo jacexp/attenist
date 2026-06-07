@@ -82,8 +82,10 @@ if %errorlevel% equ 0 (
     echo ============================================
     echo   Installation successful.
     echo   Attenist is ready to use.
-    echo   Double-click Start.bat to launch.
+    echo   Double-click Start.bat to launch, or it will launch now...
     echo ============================================
+    timeout /t 3
+    start "" Start.bat
 ) else (
     echo.
     echo WARNING: Some packages failed to import.

@@ -1,3 +1,5 @@
+import datetime
+
 class DateIndexer:
     DATE_ROW = 5
 
@@ -10,7 +12,22 @@ class DateIndexer:
                 column=col,
             ).value
 
+            if value is None:
+                continue
+
+            day = None
             if isinstance(value, int):
-                dates[value] = col
+                day = value
+            elif isinstance(value, datetime.datetime) or isinstance(value, datetime.date):
+                day = value.day
+            elif isinstance(value, str):
+                try:
+                    # Handle cases like "01", "02" or "1.0"
+                    day = int(float(value))
+                except (ValueError, TypeError):
+                    pass
+
+            if day is not None and 1 <= day <= 31:
+                dates[day] = col
 
         return dates

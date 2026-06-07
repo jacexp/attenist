@@ -26,8 +26,11 @@ class SearchService:
         if not query:
             return []
 
+        # Ensure sheet_name is normalized if provided
+        normalized_sheet = sheet_name.strip().upper() if sheet_name else None
+
         employee_objects = self.workbook_service.search_employees_as_objects(
-            query, limit * 2, sheet_name=sheet_name
+            query, limit * 2, sheet_name=normalized_sheet
         )
 
         results = []

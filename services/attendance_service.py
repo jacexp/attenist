@@ -100,7 +100,26 @@ class AttendanceService:
             )
 
         sheet = self.workbook[employee.sheet_name]
-        column = self.dates[day]
+        
+        # Determine column based on sheet-specific or global dates
+        if isinstance(self.dates, dict) and any(isinstance(v, dict) for v in self.dates.values()):
+            # Per-sheet date mapping
+            sheet_dates = self.dates.get(employee.sheet_name, {})
+            column = sheet_dates.get(day)
+            
+            if not column:
+                # Fallback: check if any other sheet has this day indexed
+                for s_name, s_dates in self.dates.items():
+                    if day in s_dates:
+                        column = s_dates[day]
+                        logger.warning(f"Date {day} not found in sheet '{employee.sheet_name}', using column from '{s_name}'")
+                        break
+        else:
+            # Simple global date mapping
+            column = self.dates.get(day)
+
+        if not column:
+            raise KeyError(day)
 
         target_cell = sheet.cell(row=employee.row, column=column)
 

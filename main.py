@@ -72,9 +72,10 @@ def main():
         for sheet in workbook.worksheets:
             has_employees = any(emp.sheet_name == sheet.title for emp in employees)
             if has_employees:
-                dates = DateIndexer().build(sheet)
-                if dates:
-                    break
+                sheet_dates = DateIndexer().build(sheet)
+                if sheet_dates:
+                    dates[sheet.title] = sheet_dates
+                    logging.info(f"Indexed {len(sheet_dates)} dates for sheet '{sheet.title}'")
 
         if not dates:
             splash.close()
