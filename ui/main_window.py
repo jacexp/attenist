@@ -161,11 +161,21 @@ class MainWindow(QWidget):
         self.manual_save_button.clicked.connect(self.perform_save)
         self.sheet_selector.currentTextChanged.connect(self.on_sheet_changed)
         
-        # Single-Enter Workflow: Mark from search box
+        # Multiple ways to trigger "Mark Attendance" with Enter
         self.search_box.returnPressed.connect(self.mark_attendance)
+        self.results_list.itemActivated.connect(self.mark_attendance) # Enter or Double-click on list
+        self.day_combo.lineEdit().returnPressed.connect(self.mark_attendance) if self.day_combo.isEditable() else None
+        self.shift_combo.lineEdit().returnPressed.connect(self.mark_attendance) if self.shift_combo.isEditable() else None
 
     def setup_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.perform_save)
+        
+        # Dedicated Enter/Return shortcut for marking attendance
+        self.mark_shortcut = QShortcut(QKeySequence(Qt.Key_Return), self)
+        self.mark_shortcut.activated.connect(self.mark_attendance)
+        
+        self.enter_shortcut = QShortcut(QKeySequence(Qt.Key_Enter), self)
+        self.enter_shortcut.activated.connect(self.mark_attendance)
 
     def on_search_changed(self, text):
         text = text.strip()
@@ -255,6 +265,10 @@ class MainWindow(QWidget):
             self.day_combo.setCurrentIndex(0)
 
     def mark_attendance(self):
+        # Only trigger if manual attendance tab is active
+        if self.tab_widget.currentIndex() != 0:
+            return
+
         # Prevent double-marking if search box is already cleared
         if not self.search_box.text().strip() and not self.selected_employee:
             return
