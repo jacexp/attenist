@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QCloseEvent, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -171,7 +171,7 @@ class MainWindow(QWidget):
         self.search_box.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if obj is self.search_box and event.type() == Qt.KeyPress:
+        if obj is self.search_box and event.type() == QEvent.KeyPress:
             if event.key() == Qt.Key_Down:
                 if self.results_list.count() > 0:
                     curr = self.results_list.currentRow()
