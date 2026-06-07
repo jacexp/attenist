@@ -105,12 +105,7 @@ class MainWindow(QWidget):
         entry_layout = QVBoxLayout()
 
         self.day_combo = QComboBox()
-        available_days = sorted(self.dates.keys())
-        for day in available_days:
-            self.day_combo.addItem(str(day))
-        
-        if 14 in self.dates:
-            self.day_combo.setCurrentText("14")
+        self.update_day_combo()
 
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Employee ID or Name")
@@ -219,9 +214,45 @@ class MainWindow(QWidget):
                 return
 
         self.active_sheet_name = sheet_name
+        
+        # Refresh days for the new sheet
+        self.update_day_combo()
+
         # Refresh search if there is text
         if self.search_box.text():
             self.on_search_changed(self.search_box.text())
+
+    def update_day_combo(self):
+        """Update day_combo with available days for the current active sheet."""
+        if not hasattr(self, 'day_combo'):
+            return
+            
+        self.day_combo.clear()
+        
+        if not self.dates or not self.active_sheet_name:
+            return
+
+        # Handle both old global dict and new per-sheet dict structure
+        sheet_dates = {}
+        if self.active_sheet_name in self.dates:
+            # New structure: dict[sheet_name, dict[day, col]]
+            sheet_dates = self.dates[self.active_sheet_name]
+        elif any(not isinstance(v, dict) for v in self.dates.values()):
+            # Old/Simple structure: dict[day, col]
+            sheet_dates = self.dates
+
+        available_days = sorted(sheet_dates.keys())
+        for day in available_days:
+            self.day_combo.addItem(str(day))
+            
+        # Try to select current day as default
+        from datetime import datetime
+        current_day = str(datetime.now().day)
+        index = self.day_combo.findText(current_day)
+        if index >= 0:
+            self.day_combo.setCurrentIndex(index)
+        elif self.day_combo.count() > 0:
+            self.day_combo.setCurrentIndex(0)
 
     def mark_attendance(self):
         if not self.selected_employee:

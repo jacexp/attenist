@@ -969,14 +969,7 @@ class OCRAttendanceTab(QWidget):
         commit_layout = QHBoxLayout()
 
         commit_layout.addWidget(QLabel("Date:"))
-        self.date_combo = QComboBox()
-        self.date_combo.addItems([str(d) for d in range(1, 32)])
-        from datetime import datetime
-        current_day = datetime.now().day
-        if current_day <= 31:
-            self.date_combo.setCurrentText(str(current_day))
-        else:
-            self.date_combo.setCurrentText("15")
+        self.update_available_dates()
         commit_layout.addWidget(self.date_combo)
 
         commit_layout.addWidget(QLabel("Shift:"))
@@ -1723,7 +1716,48 @@ class OCRAttendanceTab(QWidget):
 
         active_sheet = self.main_window.active_sheet_name if self.main_window else "(none)"
         self.active_sheet_label.setText(f"Active Sheet: {active_sheet}")
+        
+        # Refresh dates for the new sheet
+        self.update_available_dates()
         return True
+
+    def update_available_dates(self):
+        """Update date_combo with available days for the current active sheet."""
+        if not hasattr(self, 'date_combo'):
+            self.date_combo = QComboBox()
+            
+        self.date_combo.clear()
+        
+        active_sheet = self.main_window.active_sheet_name if self.main_window else None
+        dates_dict = self.attendance_service.dates
+        
+        if not dates_dict or not active_sheet:
+            # Fallback to 1-31 if no indexing info
+            self.date_combo.addItems([str(d) for d in range(1, 32)])
+        else:
+            # Handle per-sheet structure
+            sheet_dates = {}
+            if active_sheet in dates_dict:
+                sheet_dates = dates_dict[active_sheet]
+            elif any(not isinstance(v, dict) for v in dates_dict.values()):
+                # Global structure
+                sheet_dates = dates_dict
+                
+            if sheet_dates:
+                available_days = sorted(sheet_dates.keys())
+                self.date_combo.addItems([str(day) for day in available_days])
+            else:
+                # Still fallback to 1-31 if this sheet has no dates
+                self.date_combo.addItems([str(d) for d in range(1, 32)])
+
+        # Try to select current day as default
+        from datetime import datetime
+        current_day = str(datetime.now().day)
+        index = self.date_combo.findText(current_day)
+        if index >= 0:
+            self.date_combo.setCurrentIndex(index)
+        elif self.date_combo.count() > 0:
+            self.date_combo.setCurrentIndex(0)
 
     def clear_all(self):
         reply = QMessageBox.question(self, "Clear All Data",
