@@ -461,16 +461,24 @@ class VerificationWizard(QDialog):
     def accept_match(self):
         result = self.problem_rows[self.current_index]
 
-        if self.suggested_matches and self.match_list.currentItem():
+        # Use current selection or fallback to first suggestion if available
+        emp = None
+        if self.match_list.currentItem():
             emp = self.match_list.currentItem().data(Qt.UserRole)
+        elif self.match_list.count() > 0:
+            emp = self.match_list.item(0).data(Qt.UserRole)
+
+        if emp:
             logging.info(
-                f"SHEET_SCOPED: accept_match "
+                f"VERIFICATION: accept_match "
                 f"employee={emp.employee_id} emp_sheet='{emp.sheet_name}' "
                 f"active_sheet='{self.sheet_name}'"
             )
             self.validation_service.manual_correction(
                 result, selected_employee=emp, sheet_name=self.sheet_name
             )
+        else:
+            logging.warning(f"VERIFICATION: accept_match called but no employee selected and no suggestions available for record {result.ocr_id}")
 
         self.current_index += 1
         self.show_current_record()

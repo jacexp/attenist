@@ -197,7 +197,7 @@ class MainWindow(QWidget):
             self.selected_employee = None
             return
         
-        self.selected_employee = selected_items[0].data(32)
+        self.selected_employee = selected_items[0].data(Qt.UserRole)
 
     def on_sheet_changed(self, sheet_name):
         # Prevent recursion and handle cancellation
@@ -255,7 +255,22 @@ class MainWindow(QWidget):
             self.day_combo.setCurrentIndex(0)
 
     def mark_attendance(self):
+        # Prevent double-marking if search box is already cleared
+        if not self.search_box.text().strip() and not self.selected_employee:
+            return
+
+        # Authoritative Fallback: Sync variable with UI state if possible
         if not self.selected_employee:
+            current_item = self.results_list.currentItem()
+            if current_item:
+                self.selected_employee = current_item.data(Qt.UserRole)
+                logging.info(f"MARK: Recovered selection from currentItem: {self.selected_employee.employee_id if self.selected_employee else 'None'}")
+            elif self.results_list.count() == 1:
+                self.selected_employee = self.results_list.item(0).data(Qt.UserRole)
+                logging.info(f"MARK: Recovered selection from single item in list: {self.selected_employee.employee_id if self.selected_employee else 'None'}")
+
+        if not self.selected_employee:
+            logging.warning("MARK: Rejecting attendance mark - no selection found in variable or UI list.")
             QMessageBox.warning(
                 self,
                 "No Selection",
