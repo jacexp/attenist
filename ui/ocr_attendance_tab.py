@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QTextEdit, QComboBox, QGroupBox,
     QFileDialog, QMessageBox, QFrame, QLineEdit,
     QDialog, QDialogButtonBox, QListWidget, QListWidgetItem,
-    QCheckBox,
+    QCheckBox, QTabWidget,
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
