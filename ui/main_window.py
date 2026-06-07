@@ -167,6 +167,25 @@ class MainWindow(QWidget):
         self.day_combo.lineEdit().returnPressed.connect(self.mark_attendance) if self.day_combo.isEditable() else None
         self.shift_combo.lineEdit().returnPressed.connect(self.mark_attendance) if self.shift_combo.isEditable() else None
 
+        # Enable arrow key navigation from search box to results list
+        self.search_box.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj is self.search_box and event.type() == Qt.KeyPress:
+            if event.key() == Qt.Key_Down:
+                if self.results_list.count() > 0:
+                    curr = self.results_list.currentRow()
+                    if curr < self.results_list.count() - 1:
+                        self.results_list.setCurrentRow(curr + 1)
+                    return True
+            elif event.key() == Qt.Key_Up:
+                if self.results_list.count() > 0:
+                    curr = self.results_list.currentRow()
+                    if curr > 0:
+                        self.results_list.setCurrentRow(curr - 1)
+                    return True
+        return super().eventFilter(obj, event)
+
     def setup_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.perform_save)
         
